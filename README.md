@@ -9,6 +9,7 @@ Currently targets:
 
 ## Requirements
 
+ * SWIG 4.3.1 (Must have `SWIG_DIR` environment variable set to install dir where swig.exe is present)
  * Visual Studio 2022 with MSVC 2019 compiler and .net 6+ SDK workloads enabled
  * Java 8 SDK (Must have `JAVA_HOME` environment variable set)
  * 7-zip (The `7z` executable must be globally accessible from the command-line)
