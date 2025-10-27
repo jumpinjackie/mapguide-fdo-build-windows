@@ -55,6 +55,10 @@ Drop the required files under `fdo_rdbms_thirdparty` as follows:
    *  Generates a `mapguide_40_revision.txt` containing the SVN HEAD revision number. This file is needed for next step
  8. Run MG build: `mapguide_rel.bat`
 
+## Limitations
+
+Debug and Release builds of MapGuide cannot be made simultaneously. If you need both Debug and Release builds, you need to do it one at a time.
+
 ## Steps (tldr, powershell)
 
 ```powershell
