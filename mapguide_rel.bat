@@ -1,8 +1,10 @@
 @echo off
-SET INSTALL_DIR=C:\Workspace\mg-4.0-install\rel64
-SET MG_INSTALLER_DIR=C:\Workspace\mg-4.0\Installer
-SET MG_BASE_DIR=C:\Workspace\mg-4.0\MgDev
-SET MG_INSTANTSETUP_DIR=C:\Workspace\MgInstantSetup
+REM Directory where this script resides (trailing backslash included)
+SET SCRIPT_DIR=%~dp0
+SET INSTALL_DIR=%SCRIPT_DIR%mg-install\rel64
+SET MG_INSTALLER_DIR=%SCRIPT_DIR%Installer
+SET MG_BASE_DIR=%SCRIPT_DIR%MgDev
+SET MG_INSTANTSETUP_DIR=%SCRIPT_DIR%MgInstantSetup
 SET MG_OUTPUT_DIR=%MG_BASE_DIR%\%TYPEBUILD%
 SET MG_OUTPUT_DIR_SERVER=%MG_OUTPUT_DIR%\Server
 SET MG_OUTPUT_DIR_WEB=%MG_OUTPUT_DIR%\Web

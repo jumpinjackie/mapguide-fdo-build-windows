@@ -2,5 +2,9 @@
 /fdo-dbg
 /fdo_rdbms_thirdparty
 /fdo-build
+/mgcommon
+/mg-install
+/MgInstantSetup
 /MgDev
 /Installer
+/mapguide*revision.txt
