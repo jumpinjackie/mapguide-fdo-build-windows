@@ -10,6 +10,7 @@ Currently targets:
 ## Requirements
 
  * Visual Studio 2022 with MSVC 2019 compiler and .net 6+ SDK workloads enabled
+ * Java 8 SDK (Must have `JAVA_HOME` environment variable set)
  * 7-zip (The `7z` executable must be globally accessible from the command-line)
  * Perl (The `perl` executable must be globally accessible from the command-line)
  * WiX Toolset
