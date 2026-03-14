@@ -30,7 +30,17 @@ echo BUILD_INSTANTSETUP       = %BUILD_INSTANTSETUP%
 echo MG_VER_MAJOR_MINOR_BUILD = %MG_VER_MAJOR_MINOR_BUILD%
 echo MG_VER_REV               = %MG_VER_REV%
 
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+SET VSDEVCMD=
+if exist "C:\Program Files\Microsoft Visual Studio\2026\Enterprise\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Enterprise\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\Professional\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Professional\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\BuildTools\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\BuildTools\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" goto error_no_vsdevcmd
+call "%VSDEVCMD%"
 :build_main
 
 cd /D %MG_BASE_DIR%
@@ -64,6 +74,10 @@ popd
 :zip_mginstantsetup
 echo [notice]: We do not make instantsetup packages in debug mode
 goto done
+
+:error_no_vsdevcmd
+echo [ERROR]: Could not find VsDevCmd.bat from Visual Studio 2026 or Visual Studio 2022
+exit /B 1
 
 :error
 echo [ERROR]: There was an error building the component

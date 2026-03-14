@@ -30,7 +30,17 @@ echo BUILD_INSTANTSETUP       = %BUILD_INSTANTSETUP%
 echo MG_VER_MAJOR_MINOR_BUILD = %MG_VER_MAJOR_MINOR_BUILD%
 echo MG_VER_REV               = %MG_VER_REV%
 
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+SET VSDEVCMD=
+if exist "C:\Program Files\Microsoft Visual Studio\2026\Enterprise\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Enterprise\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\Professional\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Professional\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\Community\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2026\BuildTools\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2026\BuildTools\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" if exist "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+if "%VSDEVCMD%"=="" goto error_no_vsdevcmd
+call "%VSDEVCMD%"
 :build_main
 
 cd /D %MG_BASE_DIR%
@@ -70,6 +80,10 @@ cd /D %INSTALL_DIR%
 7z a %INSTALL_DIR%\MapGuideOpenSource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-InstantSetup-x64.exe -mmt -mx5 -sfx7z.sfx CS-Map Server Web Setup Snapshot
 7z a %INSTALL_DIR%\mapguideopensource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-pdbs.7z pdbs/**/*.pdb pdbs/*.pdb
 goto done
+
+:error_no_vsdevcmd
+echo [ERROR]: Could not find VsDevCmd.bat from Visual Studio 2026 or Visual Studio 2022
+exit /B 1
 
 :error
 echo [ERROR]: There was an error building the component
