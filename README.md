@@ -10,11 +10,15 @@ Currently targets:
 ## Requirements
 
  * SWIG 4.3.1 (Must have `SWIG_DIR` environment variable set to install dir where swig.exe is present)
- * Visual Studio 2022 with MSVC 2019 compiler and .net 6+ SDK workloads enabled
  * Java 8 SDK (Must have `JAVA_HOME` environment variable set)
+ * Apache Ant (Must have `ANT_HOME` environment variable set)
+ * Visual Studio 2022 or 2026 with MSVC 2019 compiler and .net 6+ SDK workloads enabled
  * 7-zip (The `7z` executable must be globally accessible from the command-line)
  * Perl (The `perl` executable must be globally accessible from the command-line)
  * WiX Toolset
+ * docfx (`dotnet tool install -g docfx`)
+ * Python 3.x
+    * Sphinx (`pip install -U sphinx`)
  * SVN checkouts of
     * `https://svn.osgeo.org/mapguide/trunk/Tools/MgInstantSetup` -> `MgInstantSetup`
     * `https://svn.osgeo.org/fdo/branches/4.2` -> `fdo-dbg`
