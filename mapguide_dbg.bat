@@ -51,7 +51,7 @@ if not "%errorlevel%"=="0" goto error
 call build.bat -a=install -w=all -o=%INSTALL_DIR%
 if not "%errorlevel%"=="0" goto error
 cd /D %MG_INSTALLER_DIR%
-call build.bat -a=prepare -source=%INSTALL_DIR%
+call build.bat -a=prepare -build=Debug64 -source=%INSTALL_DIR%
 if not "%errorlevel%"=="0" goto error
 if "%BUILD_INSTALLER%"=="1" goto make_installer
 if "%BUILD_INSTANTSETUP%"=="1" goto make_instantsetup
@@ -63,7 +63,7 @@ goto done
 :make_instantsetup
 if not exist %INSTALL_DIR%\Setup mkdir %INSTALL_DIR%\Setup
 cd /D %MG_INSTANTSETUP_DIR%
-msbuild /p:Configuration=Release;Platform="Any CPU" MgInstantSetup.sln
+msbuild /restore /p:Configuration=Release;Platform="Any CPU" MgInstantSetup.sln
 if not "%errorlevel%"=="0" goto error
 pushd %MG_INSTANTSETUP_DIR%\out\release
 copy /Y *.exe %INSTALL_DIR%\Setup

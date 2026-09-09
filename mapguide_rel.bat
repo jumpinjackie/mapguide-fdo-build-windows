@@ -51,23 +51,23 @@ if not "%errorlevel%"=="0" goto error
 call build.bat -a=install -w=all -o=%INSTALL_DIR%
 if not "%errorlevel%"=="0" goto error
 cd /D %MG_INSTALLER_DIR%
-call build.bat -a=prepare -source=%INSTALL_DIR%
+call build.bat -a=prepare -build=Release64 -source=%INSTALL_DIR%
 if not "%errorlevel%"=="0" goto error
 if "%BUILD_INSTALLER%"=="1" goto make_installer
 if "%BUILD_INSTANTSETUP%"=="1" goto make_instantsetup
 goto done
 :make_installer
 cd /D %MG_INSTALLER_DIR%
-call build.bat -a=generate -source=%INSTALL_DIR%
+call build.bat -a=generate -build=Release64 -source=%INSTALL_DIR%
 if not "%errorlevel%"=="0" goto error
-call build.bat -source=%INSTALL_DIR% -version=%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV% -name=MapGuideOpenSource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-%MG_RELEASE_LABEL%-x64 -title="MapGuide Open Source %MG_VER_MAJOR_MINOR_BUILD% %MG_RELEASE_LABEL%"
-if not "%errorlevel%"=="0" goto error\
+call build.bat -build=Release64 -source=%INSTALL_DIR% -version=%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV% -name=MapGuideOpenSource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-%MG_RELEASE_LABEL%-x64 -title="MapGuide Open Source %MG_VER_MAJOR_MINOR_BUILD% %MG_RELEASE_LABEL%"
+if not "%errorlevel%"=="0" goto error
 if "%BUILD_INSTANTSETUP%"=="1" goto make_instantsetup
 goto done
 :make_instantsetup
 if not exist %INSTALL_DIR%\Setup mkdir %INSTALL_DIR%\Setup
 cd /D %MG_INSTANTSETUP_DIR%
-msbuild /p:Configuration=Release;Platform="Any CPU" MgInstantSetup.sln
+msbuild /restore /p:Configuration=Release;Platform="Any CPU" MgInstantSetup.sln
 if not "%errorlevel%"=="0" goto error
 pushd %MG_INSTANTSETUP_DIR%\out\release
 copy /Y *.exe %INSTALL_DIR%\Setup
