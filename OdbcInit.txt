@@ -1,0 +1,5 @@
+provider=Odbc;clean=true;
+serviceOracle=fdodb;usernameOracle=xxxx;passwordOracle=xxxx;DSNOracle=ORACLE;
+serviceMySql=fdodb;usernameMySql=root;passwordMySql=fdotest;DSNMySql=MySQL;
+serviceSqlServer=fdodb;usernameSqlServer=sa;passwordSqlServer=Sql2016!;DSNSqlServer=SqlServer;
+AccessDriverVersion=12;DbaseDriverVersion=12;ExcelDriverVersion=12;TextDriverVersion=12;
