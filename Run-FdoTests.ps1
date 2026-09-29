@@ -16,7 +16,7 @@
     'All' (default) runs every suite; 'Odbc' runs all ODBC sub-suites.
     Individual suites: FdoCore, Gdal, MySql, OdbcAccess, OdbcDbase,
     OdbcExcel, OdbcMySql, OdbcOracle, OdbcSqlServer, OdbcText, Ogr, PostGis,
-    Sdf, Shp, Sqlite, SqlServerSpatial, Wms.
+    Sdf, Shp, Sqlite, SqlServerSpatial, Wfs, Wms.
 
 .PARAMETER List
     Print the available suites (and the command each would run for the
@@ -66,7 +66,7 @@ $TestTable = [ordered]@{
     'FdoCore' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Fdo\Unmanaged\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestFDOCore.txt' }
+        Debug   = @{ WorkDir = 'fdo-dbg\Fdo\UnitTest'; Exe = '..\Unmanaged\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestFDOCore.txt' }
         Release = @{ WorkDir = 'fdo-rel\Fdo\UnitTest';                 Exe = '..\Unmanaged\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestFDOCore.txt' }
     }
     'Gdal' = @{
@@ -78,50 +78,50 @@ $TestTable = [ordered]@{
     'MySql' = @{
         Suite   = $null
         InitFile = 'MySqlInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestMySQL.exe'; Log = 'Dbg64_UnitTestMySQL.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestMySQL.exe'; Log = 'Rel64_UnitTestMySQL.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestMySql.exe'; Log = 'Dbg64_UnitTestMySQL.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestMySql.exe'; Log = 'Rel64_UnitTestMySQL.txt' }
     }
     'OdbcAccess' = @{
         Suite   = 'OdbcAccessTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_Access.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_Access.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Access.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Access.txt' }
     }
     'OdbcDbase' = @{
         Suite   = 'OdbcDbaseTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_Dbase.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_Dbase.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Dbase.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Dbase.txt' }
     }
     'OdbcExcel' = @{
         Suite   = 'OdbcExcelTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_Excel.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_Excel.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Excel.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Excel.txt' }
     }
     'OdbcMySql' = @{
         Suite   = 'OdbcMySqlTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_MySQL.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_MySQL.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_MySQL.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_MySQL.txt' }
     }
     'OdbcOracle' = @{
         Suite   = 'OdbcOracleTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_Oracle.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_Oracle.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Oracle.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Oracle.txt' }
     }
     'OdbcSqlServer' = @{
         Suite   = 'OdbcSqlServerTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_SqlServer.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_SqlServer.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_SqlServer.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_SqlServer.txt' }
     }
     'OdbcText' = @{
         Suite   = 'OdbcTextTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestODBC.exe'; Log = 'Dbg64_UnitTestODBC_Text.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestODBC.exe'; Log = 'Rel64_UnitTestODBC_Text.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Text.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Text.txt' }
     }
     'Ogr' = @{
         Suite   = $null
@@ -144,8 +144,8 @@ $TestTable = [ordered]@{
     'Shp' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestSHP.txt' }
-        Release = @{ WorkDir = 'fdo-rel\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestSHP.txt' }
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestSHP.txt'; Clean = 'fdo-dbg\Providers\SHP\TestData\clean.cmd' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestSHP.txt'; Clean = 'fdo-rel\Providers\SHP\TestData\clean.cmd' }
     }
     'Sqlite' = @{
         Suite   = $null
@@ -165,6 +165,12 @@ $TestTable = [ordered]@{
         Debug   = @{ WorkDir = 'fdo-dbg\Providers\WMS\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestWMS.txt' }
         Release = @{ WorkDir = 'fdo-rel\Providers\WMS\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestWMS.txt' }
     }
+    'Wfs' = @{
+        Suite   = $null
+        InitFile = $null
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\WFS\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestWFS.txt' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\WFS\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestWFS.txt' }
+    }
 }
 
 $OdbcSuites = @('OdbcAccess', 'OdbcDbase', 'OdbcExcel', 'OdbcMySql', 'OdbcOracle', 'OdbcSqlServer', 'OdbcText')
@@ -176,6 +182,7 @@ function Get-CommandParts {
     $wd  = Join-Path $BuildRoot $cfg.WorkDir
     $exe = Join-Path $wd $cfg.Exe
     $log = Join-Path $LogRoot $cfg.Log
+    $clean = if ($cfg.Clean) { Join-Path $BuildRoot $cfg.Clean } else { $null }
 
     $argList = New-Object System.Collections.Generic.List[string]
     if ($def.Suite) { $argList.Add($def.Suite) }
@@ -187,6 +194,7 @@ function Get-CommandParts {
         WorkDir = $wd
         Exe     = $exe
         Log     = $log
+        Clean   = $clean
         Args    = $argList
     }
 }
@@ -235,6 +243,17 @@ function Invoke-TestSuite {
     Write-Host "  WorkDir : $($parts.WorkDir)"
     Write-Host "  Command : $($parts.Exe) $($parts.Args -join ' ')"
     Write-Host "  Log     : $($parts.Log)"
+
+    if ($parts.Clean -and (Test-Path -LiteralPath $parts.Clean -PathType Leaf)) {
+        Write-Host "  Clean   : $($parts.Clean)"
+        Push-Location -LiteralPath (Split-Path -Parent $parts.Clean)
+        try {
+            cmd.exe /c $parts.Clean | Out-Host
+        }
+        finally {
+            Pop-Location
+        }
+    }
 
     Push-Location -LiteralPath $parts.WorkDir
     try {
