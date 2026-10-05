@@ -199,6 +199,17 @@ function Get-CommandParts {
     }
 }
 
+function Format-Elapsed {
+    param([TimeSpan] $Elapsed)
+    if ($Elapsed.TotalHours -ge 1) {
+        return ('{0}h {1}m {2:0.0}s' -f [int] $Elapsed.TotalHours, $Elapsed.Minutes, ($Elapsed.Seconds + $Elapsed.Milliseconds / 1000))
+    }
+    if ($Elapsed.TotalMinutes -ge 1) {
+        return ('{0}m {1:0.0}s' -f [int] $Elapsed.TotalMinutes, ($Elapsed.Seconds + $Elapsed.Milliseconds / 1000))
+    }
+    return ('{0:0.00}s' -f $Elapsed.TotalSeconds)
+}
+
 function Resolve-TestNames {
     param([string[]] $Requested)
     $resolved = New-Object System.Collections.Generic.List[string]
@@ -231,11 +242,11 @@ function Invoke-TestSuite {
 
     if (-not (Test-Path -LiteralPath $parts.WorkDir -PathType Container)) {
         Write-Warning "[$Name] SKIPPED: working directory not found: $($parts.WorkDir)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true }
+        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null }
     }
     if (-not (Test-Path -LiteralPath $parts.Exe -PathType Leaf)) {
         Write-Warning "[$Name] SKIPPED: executable not found: $($parts.Exe)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true }
+        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null }
     }
 
     Write-Host ''
@@ -243,6 +254,8 @@ function Invoke-TestSuite {
     Write-Host "  WorkDir : $($parts.WorkDir)"
     Write-Host "  Command : $($parts.Exe) $($parts.Args -join ' ')"
     Write-Host "  Log     : $($parts.Log)"
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     if ($parts.Clean -and (Test-Path -LiteralPath $parts.Clean -PathType Leaf)) {
         Write-Host "  Clean   : $($parts.Clean)"
@@ -264,9 +277,13 @@ function Invoke-TestSuite {
         Pop-Location
     }
 
+    $stopwatch.Stop()
+    $duration = $stopwatch.Elapsed
+
     $color = if ($code -eq 0) { 'Green' } else { 'Red' }
     Write-Host "  Exit    : $code" -ForegroundColor $color
-    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false }
+    Write-Host "  Elapsed : $(Format-Elapsed -Elapsed $duration)"
+    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration }
 }
 
 # --- Entry point -----------------------------------------------------------
@@ -294,23 +311,29 @@ if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
 Write-Host "Running $($testsToRun.Count) suite(s) against $Configuration tree at:" -ForegroundColor Cyan
 Write-Host "  $BuildRoot"
 
+$totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $results = foreach ($name in $testsToRun) {
     Invoke-TestSuite -Name $name
 }
+$totalStopwatch.Stop()
 
 Write-Host ''
 Write-Host '=== Summary ===' -ForegroundColor Cyan
 foreach ($r in $results) {
+    $elapsedText = if ($null -ne $r.Duration) { ' [' + (Format-Elapsed -Elapsed $r.Duration) + ']' } else { '' }
     if ($r.Skipped) {
         Write-Host ("  {0,-18} SKIPPED" -f $r.Name) -ForegroundColor Yellow
     }
     elseif ($r.ExitCode -eq 0) {
-        Write-Host ("  {0,-18} OK (exit 0)" -f $r.Name) -ForegroundColor Green
+        Write-Host ("  {0,-18} OK (exit 0){1}" -f $r.Name, $elapsedText) -ForegroundColor Green
     }
     else {
-        Write-Host ("  {0,-18} FAILED (exit {1})" -f $r.Name, $r.ExitCode) -ForegroundColor Red
+        Write-Host ("  {0,-18} FAILED (exit {1}){2}" -f $r.Name, $r.ExitCode, $elapsedText) -ForegroundColor Red
     }
 }
+
+Write-Host ''
+Write-Host ("  Total elapsed: {0}" -f (Format-Elapsed -Elapsed $totalStopwatch.Elapsed)) -ForegroundColor Cyan
 
 $failed = @($results | Where-Object { -not $_.Skipped -and $_.ExitCode -ne 0 })
 if ($failed.Count -gt 0) {
