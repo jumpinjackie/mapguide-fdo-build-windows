@@ -1,0 +1,271 @@
+# Agent Instructions for mapguide-fdo-build-windows
+
+## Overview
+
+This repository is a Windows build and test environment for MapGuide Open Source 4.0 and Feature Data
+Objects (FDO) 4.2. It is a **virtual monorepo**: it orchestrates the build of two externally-versioned
+source trees (Subversion working copies, not submodules) plus the MapGuide installer tooling, using
+batch wrappers around each tree's own build system, and it carries a unified FDO unit-test runner.
+Everything runs on the host with MSVC — there are no containers, and only x64 is supported.
+
+Read [Memory management](#memory-management) before writing FDO or MapGuide code. Nearly every defect
+an agent introduced in the sibling Linux repo
+([mapguide-fdo-docker-build](https://github.com/jumpinjackie/mapguide-fdo-docker-build)) was a **lost
+counted reference**, and the rules that prevent them are identical on both platforms — the code is the
+same code. [CPP_STYLE.md](./CPP_STYLE.md) is the ownership contract;
+[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) is the catalogue of real leaks, the shapes they
+take, and how each one was found.
+
+## Repository model
+
+### Durable vs. generated content
+
+Durable content (edited and committed to git):
+
+- `README.md` — requirements, the thirdparty layout, the build sequence
+- `*.bat` — the build wrappers and their flag handling
+- `Run-FdoTests.ps1` — the FDO unit-test runner, including its suite table
+- `revnum.pl` — SVN revision extractor used by `mapguide_*_setup.bat`
+- `*Init.txt` — the init files the database-backed suites need
+- `docs/**` — the memory-leak catalogue
+- `AGENTS.md`, `CPP_STYLE.md` — this file and the C++/ownership rules
+
+Generated content (never hand-edited; gitignored — see `.gitignore`):
+
+- `fdo-dbg/`, `fdo-rel/` — the two SVN checkouts of the FDO tree (Debug and Release)
+- `MgDev/`, `Installer/`, `MgInstantSetup/` — the SVN checkouts of the MapGuide trees
+- `fdo_rdbms_thirdparty/` — MySQL, PostgreSQL and Oracle client headers and libraries (supplied by hand)
+- `fdo-build/`, `mg-install/`, `mgcommon/` — build and packaging output
+- `testlogs/` — the runner's tee'd logs
+- `mapguide_4*_revision.txt` — stamped by `mapguide_*_setup.bat`
+
+When a build flag has to change, change the wrapper `.bat` that owns it. `fdo_dbg.bat`/`fdo_rel.bat`
+set the thirdparty environment variables, then parse and forward options to the tree's own `build.bat`;
+a build run by hand with different flags is not reproducible for the next agent.
+
+### Source trees
+
+| Path | Product | SVN branch |
+|---|---|---|
+| `fdo-dbg` | FDO (Debug tree) | `branches/4.2` |
+| `fdo-rel` | FDO (Release tree; a second checkout, or a copy of the first) | `branches/4.2` |
+| `MgDev` | MapGuide Open Source | `branches/4.0/MgDev` |
+| `Installer` | MapGuide installer | `trunk/Installer` |
+| `MgInstantSetup` | InstantSetup bundle | `trunk/Tools/MgInstantSetup` |
+
+Rules for working with the source trees:
+
+- You may edit files under `MgDev` and the FDO trees, but you must **never commit changes upstream**.
+  Do not run `svn commit`, or any svn command that writes to the repository. `svn update` / `svn info`
+  are fine.
+- `MgDev\Oem\FDO` is a **staging copy** written by `mapguide_*_setup.bat` out of
+  `fdo-build\{dbg64,rel64}\Fdo` (`Inc`/`Lib` → `Oem\FDO\{Inc,Lib64}`, `Bin` → `Oem\FDO\Bin\{Debug64,Release64}`).
+  It is overwritten on every setup run: never edit it, and never treat it as a source tree.
+- Debug and Release builds of MapGuide cannot be made simultaneously — `mg-install\dbg64` and
+  `mg-install\rel64` are built one at a time. The same applies to the two FDO trees.
+- Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
+  repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
+
+## Requirements
+
+See [README.md](./README.md) for the full list — SWIG 4.3.1 with `SWIG_DIR` set, Java 8 with
+`JAVA_HOME`, Apache Ant with `ANT_HOME`, Visual Studio 2022/2026 (MSVC 2019 toolset), 7-zip and Perl on
+the `PATH`, WiX, docfx, Python 3 with Sphinx — and for the required `fdo_rdbms_thirdparty` layout
+(MySQL client headers/libs, Oracle Instant Client 12c, PostgreSQL headers/libs).
+
+`fdo_dbg.bat`/`fdo_rel.bat` derive `FDOORACLE`, `FDOMYSQL` and `FDOPOSTGRESQL` from
+`fdo_rdbms_thirdparty` themselves; the individual suite runners need those variables already set if
+they are invoked directly.
+
+## Common workflows
+
+### Build FDO
+
+```
+fdo_dbg.bat                 REM Debug tree  -> fdo-build\dbg64
+fdo_rel.bat                 REM Release tree -> fdo-build\rel64
+```
+
+Both wrappers accept the tree's own options, most usefully `-w=<component>` to build a subset
+(`-w=fdo`, `-w=mysql`, `-w=postgresql`, ...), `-ntp` to skip the third-party build for a faster
+incremental rebuild, and `-h` for the exhaustive list:
+
+```
+fdo_rel.bat -ntp -w=postgresql      REM just the PostgreSQL (PostGIS) provider + unit tests
+```
+
+### Build MapGuide
+
+```
+mapguide_dbg_setup.bat      REM stage FDO + stamp versions, then:
+mapguide_dbg.bat
+```
+
+`mapguide_rel_setup.bat` / `mapguide_rel.bat` are the Release equivalents (`mg-install\rel64`). The
+setup step must be re-run after every FDO build, because it is what copies the FDO SDK into
+`MgDev\Oem\FDO`. `BUILD_INSTALLER=1` and `BUILD_INSTANTSETUP=1` add the installer and InstantSetup
+bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
+
+### Test
+
+```
+.\Run-FdoTests.ps1 -List                         REM show the suites and the command each would run
+.\Run-FdoTests.ps1 -Test Sqlite                  REM one suite, Debug tree
+.\Run-FdoTests.ps1 -Configuration Release -Test Gdal, Ogr, Wms
+.\Run-FdoTests.ps1 -Test Odbc                    REM all ODBC sub-suites
+```
+
+- `-Configuration` selects the tree (`Debug` → `fdo-dbg`, `Release` → `fdo-rel`); the default is
+  `Debug`.
+- `-Test` takes one or more suite names (case-insensitive): `FdoCore`, `Gdal`, `MySql`, `OdbcAccess`,
+  `OdbcDbase`, `OdbcExcel`, `OdbcMySql`, `OdbcOracle`, `OdbcSqlServer`, `OdbcText`, `Ogr`, `PostGis`,
+  `Sdf`, `Shp`, `Sqlite`, `SqlServerSpatial`, `Wfs`, `Wms`, plus the pseudo-names `All` (the default)
+  and `Odbc`.
+- Each suite's combined output is streamed and tee'd to `testlogs\<Log>` (`Dbg64_UnitTestSQLite.txt`
+  and so on). The script exits non-zero if any suite failed, and reports `SKIPPED` when the working
+  directory or the executable is missing — a skipped suite is a build that has not been done, not a
+  pass.
+- The suites that need a database read their connection details from the matching `*Init.txt` next to
+  this file; the runner passes it as `initfiletest=...`.
+- To run a **single CppUnit registry** (much faster when chasing a failure, and the way to attribute a
+  leak to one test), run the suite executable from its working directory with the registry name:
+  the name is the test class (`UnitTest.exe SelectTest`, `UnitTest.exe GmlTest`); an unmatched name
+  silently runs zero tests. `.\Run-FdoTests.ps1 -List` prints each suite's `WorkDir` and executable.
+
+WFS and WMS query live public servers, so they depend on hosts that come and go; treat their failures
+as environmental until proven otherwise.
+
+## Memory management
+
+FDO and MapGuide both use intrusive reference counting with custom smart pointers, and both hide their
+destructors, so a leaked reference is *never* reclaimed by anything else. The full contract is in
+[CPP_STYLE.md](./CPP_STYLE.md); in short:
+
+- `FdoPtr(T*)` **attaches** — it takes over the reference you hand it and does not AddRef. The copy
+  constructor and copy-assignment *do* AddRef. So `FdoPtr<T> x = obj->GetX();` is correct (the getter's
+  reference is taken over), while `FdoPtr<T> x = obj->GetX(); FDO_SAFE_ADDREF(x.p);` leaks.
+- Every `Create()`, every `Get*`/`Find*` and `SmartCast<T>()` hands back a reference **you** own:
+  `GetItem`, `FindItem`, `GetExtent`, `GetGeometry`, `GetGeometryProperty`, `GetClasses`,
+  `GetCharacterSet`, `GetPhysicalSchema`, `GetManager`, `CreateSchemaManager`,
+  `FdoFunction::GetArguments`, ...
+- `FdoCollection::Add()`, `Insert()` and `SetItem()` AddRef what they are given, so
+  `coll->Add(FdoX::Create(...))` loses the `Create()` reference. Give every `Create()` a home:
+  `FdoPtr<FdoX> x = FdoX::Create(...); coll->Add(x);`
+- Never dereference a counted getter inline (`coll->GetItem(i)->GetName()`,
+  `obj->SmartCast<T>()->Foo()`), and never chain them — `schemas->GetItem(0)->GetClasses()->GetItem(n)`
+  drops one reference per link.
+- Child-to-parent and helper-to-owner back-pointers must be **raw**. A counted reference in the
+  direction that points *back* at the owner is a cycle, and the owner's destructor can never run to
+  break it.
+- Containers of raw pointers (`std::map::clear()`, a defaulted destructor) do not release their
+  elements.
+- Name and release caught exceptions. A `catch (...)` or a nameless `catch (FdoException*)` loses the
+  exception and its message buffer, and an exception chained as a cause is AddRef'd by the new
+  exception without the creating reference being released. A constructor that throws runs no
+  destructor.
+- In C provider code, every failure path must free what that path allocated.
+
+`FdoIDisposable::Release()` returns the new reference count ("value for debugging use only"), which
+makes it the cheapest leak probe available: print it at teardown and an object that should be gone
+shows `1`.
+
+## Finding a leak on Windows
+
+A Debug build is required for all of these; a Release run will not report anything.
+
+1. **Read the code against the rules above first.** Most of the catalogued leaks are lost references
+   that are visible on inspection — an unwrapped `Create()`, a chained getter, a raw member pointing
+   back at its owner. [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#the-recurring-shapes) is
+   the checklist.
+2. **CRT debug heap.** With `_CRTDBG_MAP_ALLOC` defined before `<crtdbg.h>` and
+   `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)` set in the test's `main`, the
+   Debug CRT dumps every block still allocated at exit, with the `new` site's file and line. Expect
+   noise: deliberately-live global and singleton state appears in that dump, so compare against a
+   known-clean run of the same suite and only chase the difference.
+   `_CrtMemCheckpoint` / `_CrtMemDifference` around a single test pinpoints what that test allocates
+   and keeps.
+3. **Visual Studio's Memory Usage tool** (Debug, native heap snapshots) or **Application Verifier**
+   (Basics → Leak) for a second, independent view; **Dr. Memory** (`drmemory -- <exe>`) works for
+   runs that cannot use the debug heap.
+4. **Reference-count instrumentation** — the technique that produced the hardest fixes, because it
+   names the *holder* rather than the allocation. Override `AddRef`/`Release` (plus the constructor
+   and destructor) on the suspect class to print `this` and a backtrace, then compare the set of
+   constructor addresses with the set of destructor addresses: whatever is created and never
+   destroyed is the leaked set, and its event history says whether the reference was *lost* (balanced
+   AddRef/Release plus a surviving initial reference) or *retained in a cycle*. Printing the count
+   returned by the final `Release()` of a set of objects is the quickest version of this.
+5. **MSVC AddressSanitizer** (`/fsanitize=address`, VS 2019 16.9+) does **not** detect leaks —
+   `/fsanitize=leak` does not exist on MSVC — but it is worth having when a *leak* fix turns into a
+   crash, because a double release is exactly what the `FdoPtr` double-attach trap produces.
+
+Then reason about the report the way the Linux pass did: a record shows the allocating frames, not the
+ownership chain, and the two useful questions are *is anything still pointing at it?* (nothing → lost
+reference, fix the allocation site) and *is the only thing pointing at it another leaked object?*
+(then find the root of that group; the rest usually collapses). Group the records by allocation frame
+and by the test that ran, fix in batches, re-run the whole suite, and judge by whole records rather
+than small size deltas.
+[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#how-to-read-a-leak-report) has the details and
+the case studies.
+
+## Generated parsers are checked in — editing the `.y` does nothing
+
+`Utilities\Common\Src\Parse\yyConstraint.y`, `Fdo\Unmanaged\Src\Fdo\Parse\yyFilter.y` and
+`yyExpression.y` are inputs to a `script*`/`script*_linux` sed pipeline (yacc output → `yy*.cpp`), and
+the **generated `yy*.cpp` is what is checked into SVN and compiled**. A grammar change has to be
+accompanied by regenerating and committing the generated file. This is also why a leak that lives in
+the parser's *error* handling — the values yacc discards on a syntax error, which only a `%destructor`
+can release — is not a small fix: see
+[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#generated-parsers-are-checked-in--editing-the-y-does-nothing).
+
+## Platform notes
+
+- A Win32 `CRITICAL_SECTION` is **recursive**: the owning thread may enter it again. FDO provider code
+  in this tree is written against that behaviour (the SQLite provider's `CriticalSectionHolder` is
+  re-entered by the same thread through the metadata build). A lock that a thread takes twice is free
+  here and a deadlock on Linux, where the same shim is a `pthread_mutex_t`; the sibling repo carries
+  that shim and the r7133/r7150 history. When adding a lock to provider code, say whether it depends on
+  recursion, so the other platform can be kept in step.
+- `wchar_t` is 16-bit here and 32-bit on Linux/GCC, and the same sources build on both. Do not bake a
+  character width into size or copy arithmetic; use the existing `A2W`/`W2A`/`SLOW` helpers.
+- Paths inside the wrappers are relative to the script directory (`%~dp0`), **except** for the
+  MapGuide ones: `mapguide_dbg_setup.bat`/`mapguide_rel_setup.bat` write `mapguide_40_revision.txt`
+  into `%CD%` and `mapguide_dbg.bat`/`mapguide_rel.bat` read it back from `%CD%`, so those four must be
+  run from the repository root or the version stamping silently uses the wrong file (or none).
+
+## Code style
+
+- **Batch files** — `@echo off`, quote every path (`set "VAR=%~dp0..."`), assert with
+  `if errorlevel 1` / `if not exist`, and follow the existing wrappers' `:parse_args` loop for options.
+  A wrapper that only sets up an environment or forwards flags should not duplicate the build
+  commands of the script it calls.
+- **PowerShell** — `Run-FdoTests.ps1` is the model: `[CmdletBinding()]`, a `param` block with
+  `ValidateSet`, a data table for the per-suite details, and no interactive prompts so it can run
+  unattended.
+- **C++** — see [CPP_STYLE.md](./CPP_STYLE.md), which applies to edits under `MgDev` and the FDO trees.
+
+## Validation (definition of done)
+
+- **Script-only changes** — run the change end to end at least once (build or test the smallest thing
+  that exercises it) and check `git status` for files the scripts wrote outside the gitignored paths.
+- **Source-tree changes (FDO or `MgDev`)** — build the affected tree (`fdo_rel.bat -ntp -w=<component>`
+  for a provider, or the relevant MapGuide configuration) and run the affected suite with
+  `.\Run-FdoTests.ps1 -Test <suite>` in the matching configuration. Report the suite's result
+  (`OK (n)`) rather than just "it built".
+- **Memory-leak fixes** — state which rule above the defect broke, fix it, re-run the affected suite
+  in Debug, and say what the leak probe showed before and after (a refcount, a `_CrtMemDifference`
+  delta, or the record count). Add a row to [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) for
+  anything new.
+- **Locking or ownership changes** — reproduce the failure first, and show the affected suite green
+  afterwards. A lock or a back-pointer that only exists for one platform cannot be signed off by
+  reading the diff.
+
+## Known issues
+
+- Debug and Release MapGuide builds cannot be made simultaneously; build them one at a time, and
+  re-run `mapguide_*_setup.bat` after every FDO build.
+- WFS and WMS suites query live public servers and fail for environmental reasons.
+- The ODBC sub-suites need their `*Init.txt` files to be correct for the machine, and the Oracle,
+  MySQL and PostGIS suites need `fdo_rdbms_thirdparty` populated and the matching environment
+  variables set.
+- The MapGuide installer requires WiX, and the InstantSetup bundle requires the .NET SDK; neither is
+  needed to build or test the C++ trees.

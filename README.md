@@ -81,6 +81,17 @@ $env:MG_RELEASE_LABEL="Final"
  * InstantSetup bundle at: `mg-install\rel64`
  * Windows installer at: `Installer\Output\en-US`
 
+## Agent guidance
+
+If you are an agent working in this repository, read these before changing code:
+
+ * [AGENTS.md](./AGENTS.md) — repository model, the build/test workflows, and the FDO/MapGuide
+   memory-management rules that most defects here break
+ * [CPP_STYLE.md](./CPP_STYLE.md) — the C++ style rules and the `FdoPtr`/`Ptr` ownership contract
+ * [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) — the leak catalogue: the shapes FDO leaks
+   take, how to read a leak report, how to attribute one to a test, and which cycles are knowingly
+   left alone
+
 ## Generating download table
 
 From Linux or WSL2 session on Windows.
