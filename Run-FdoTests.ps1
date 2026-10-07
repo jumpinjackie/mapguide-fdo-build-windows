@@ -14,13 +14,32 @@
 .PARAMETER Test
     One or more test suites to run. Names are case-insensitive.
     'All' (default) runs every suite; 'Odbc' runs all ODBC sub-suites.
-    Individual suites: FdoCore, Gdal, MySql, OdbcAccess, OdbcDbase,
+    Individual suites: FdoCore, Gdal, KingOracle, MySql, OdbcAccess, OdbcDbase,
     OdbcExcel, OdbcMySql, OdbcOracle, OdbcSqlServer, OdbcText, Ogr, PostGis,
     Sdf, Shp, Sqlite, SqlServerSpatial, Wfs, Wms.
 
 .PARAMETER List
     Print the available suites (and the command each would run for the
     selected -Configuration) and exit without running anything.
+
+.PARAMETER Timing
+    Emit a per-test timing breakdown for each suite. The GenericRdbms tests
+    print a "<Class>.<test> (<timestamp>):" marker as each test starts, so the
+    gap between consecutive markers gives the per-test wall clock time (the
+    test body plus that test's setUp/tearDown). Where a test prints
+    "Elapsed: N seconds" for explicitly instrumented work, that is reported
+    alongside so measured vs unmeasured time is visible. A ranked report is
+    printed after each suite and the full breakdown is written next to the
+    suite log as "<log>.timing.txt".
+
+.PARAMETER RoundTrips
+    Capture server-side statement counters around each suite that supports it
+    (currently only the SQL Server Spatial suite, via sys.dm_exec_query_stats).
+    This is a proxy for round trips: it reports how many statements were
+    executed, the logical reads and CPU time, and the most-executed statements.
+    The connection settings (service/username/password) are read from the
+    suite's *Init.txt file at run time; the credentials need VIEW SERVER STATE.
+    Counters are server-wide, so other activity on the same server is included.
 
 .EXAMPLE
     .\Run-FdoTests.ps1
@@ -34,10 +53,23 @@
 .EXAMPLE
     .\Run-FdoTests.ps1 -List
 
+.EXAMPLE
+    .\Run-FdoTests.ps1 -Timing
+
+.EXAMPLE
+    .\Run-FdoTests.ps1 -Test SqlServerSpatial -Timing -RoundTrips
+
 .NOTES
     If a suite needs third-party environment variables (FDOORACLE, FDOMYSQL,
     FDOPOSTGRESQL), source the matching fdoenv*.bat first, or set the
     variables before invoking this script.
+
+    The KingOracle suite runs KgOraUnitTest.exe. That executable needs the
+    Oracle client libraries (oci.dll and friends) either copied next to it or
+    on PATH, and a reachable Oracle instance. It defaults to a local Oracle XE
+    instance (//localhost:1521/xe); to use a different one, set the
+    KG_DEFAULT_ORA_CONNECTION, KG_ORA_USERNAME, KG_ORA_PASSWORD and
+    KG_ORA_SERVICE environment variables before invoking this script.
 #>
 [CmdletBinding()]
 param(
@@ -46,7 +78,11 @@ param(
 
     [string[]] $Test = @('All'),
 
-    [switch] $List
+    [switch] $List,
+
+    [switch] $Timing,
+
+    [switch] $RoundTrips
 )
 
 # The Debug/Release build trees live next to this script.
@@ -74,6 +110,12 @@ $TestTable = [ordered]@{
         InitFile = $null
         Debug   = @{ WorkDir = 'fdo-dbg\Providers\GDAL\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestGDAL.txt' }
         Release = @{ WorkDir = 'fdo-rel\Providers\GDAL\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestGDAL.txt' }
+    }
+    'KingOracle' = @{
+        Suite   = $null
+        InitFile = $null
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\KingOracle\bin\Win64\Debug'; Exe = 'KgOraUnitTest.exe'; Log = 'Dbg64_UnitTestKingOracle.txt' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\KingOracle\bin\Win64\Release'; Exe = 'KgOraUnitTest.exe'; Log = 'Rel64_UnitTestKingOracle.txt' }
     }
     'MySql' = @{
         Suite   = $null
@@ -156,6 +198,7 @@ $TestTable = [ordered]@{
     'SqlServerSpatial' = @{
         Suite   = $null
         InitFile = 'SqlServerSpatialInit.txt'
+        Stats   = 'SqlServer'
         Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestSQLServerSpatial.exe'; Log = 'Dbg64_UnitTestSQLServerSpatial.txt' }
         Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestSQLServerSpatial.exe'; Log = 'Rel64_UnitTestSQLServerSpatial.txt' }
     }
@@ -190,12 +233,14 @@ function Get-CommandParts {
     if ($def.InitFile) { $argList.Add("initfiletest=$(Join-Path $BuildRoot $def.InitFile)") }
 
     return [pscustomobject]@{
-        Name    = $Name
-        WorkDir = $wd
-        Exe     = $exe
-        Log     = $log
-        Clean   = $clean
-        Args    = $argList
+        Name     = $Name
+        WorkDir  = $wd
+        Exe      = $exe
+        Log      = $log
+        Clean    = $clean
+        Args     = $argList
+        InitFile = $def.InitFile
+        Stats    = $def.Stats
     }
 }
 
@@ -208,6 +253,240 @@ function Format-Elapsed {
         return ('{0}m {1:0.0}s' -f [int] $Elapsed.TotalMinutes, ($Elapsed.Seconds + $Elapsed.Milliseconds / 1000))
     }
     return ('{0:0.00}s' -f $Elapsed.TotalSeconds)
+}
+
+# --- Instrumentation ------------------------------------------------------
+# The GenericRdbms tests write a marker as each test starts:
+#   <Class>.<test> (Wed Oct  7 11:43:10 2026):
+# The gap between consecutive markers attributes wall-clock time per test
+# (test body plus that test's setUp/tearDown). Some tests also print
+# "Elapsed: N seconds" for explicitly instrumented work.
+$TestMarkerRegex = '^(?<name>\S.*?) \((?<ts>\w{3} \w{3}\s+\d+ \d{2}:\d{2}:\d{2} \d{4})\):\s*$'
+$ElapsedRegex = 'Elapsed:\s+(?<sec>[0-9.]+)\s+seconds'
+
+function ConvertFrom-TestMarkerTime {
+    param([string] $Text)
+    return [datetime]::ParseExact(($Text -replace '\s+', ' '), 'ddd MMM d HH:mm:ss yyyy', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Write-TimingReport {
+    param(
+        [System.Collections.Generic.List[object]] $Entries,
+        [double] $Unattributed,
+        [string] $LogPath
+    )
+
+    if ($Entries.Count -eq 0) {
+        Write-Host '  Timing  : no per-test markers found in the output.' -ForegroundColor Yellow
+        return
+    }
+
+    $attributed = 0.0
+    foreach ($e in $Entries) { $attributed += $e.Duration }
+
+    Write-Host ''
+    Write-Host '  --- Timing: slowest tests ---' -ForegroundColor Yellow
+    foreach ($e in ($Entries | Sort-Object Duration -Descending | Select-Object -First 15)) {
+        $measured = if ($e.Measured -gt 0) { '{0:N2}s' -f $e.Measured } else { '-' }
+        Write-Host ('  {0,10:N2}s  measured {1,9}  {2}' -f $e.Duration, $measured, $e.Name)
+    }
+
+    $byClass = $Entries | Group-Object { ($_.Name -split '\.')[0] } | ForEach-Object {
+        [pscustomobject]@{
+            Class = $_.Name
+            Tests = $_.Count
+            Total = ($_.Group | Measure-Object Duration -Sum).Sum
+        }
+    } | Sort-Object Total -Descending
+
+    Write-Host ''
+    Write-Host '  --- Timing: by test class ---' -ForegroundColor Yellow
+    foreach ($c in $byClass) {
+        Write-Host ('  {0,10:N2}s  {1,5} tests  {2}' -f $c.Total, $c.Tests, $c.Class)
+    }
+
+    Write-Host ''
+    Write-Host ('  Timing  : {0:N1}s across {1} tests, {2:N1}s before the first test' -f $attributed, $Entries.Count, $Unattributed) -ForegroundColor DarkGray
+
+    $timingPath = [System.IO.Path]::ChangeExtension($LogPath, '.timing.txt')
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Test' + [char]9 + 'Start' + [char]9 + 'DurationSec' + [char]9 + 'MeasuredSec')
+    foreach ($e in ($Entries | Sort-Object Duration -Descending)) {
+        $lines.Add($e.Name + [char]9 + $e.Start.ToString('yyyy-MM-dd HH:mm:ss') + [char]9 + ('{0:N3}' -f $e.Duration) + [char]9 + ('{0:N3}' -f $e.Measured))
+    }
+    Set-Content -LiteralPath $timingPath -Value $lines -Encoding UTF8
+    Write-Host "  Timing  : full breakdown written to $timingPath" -ForegroundColor DarkGray
+}
+
+# --- SQL Server round-trip counters ---------------------------------------
+# These are a proxy for round trips: sys.dm_exec_query_stats counts how many
+# times each cached statement ran. The connection settings come from the
+# suite's *Init.txt so no credentials live in this script.
+
+function Get-SqlServerTarget {
+    param([string] $InitFile)
+    if ([string]::IsNullOrEmpty($InitFile)) { return $null }
+    $path = Join-Path $BuildRoot $InitFile
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+
+    $props = @{}
+    foreach ($part in ((Get-Content -LiteralPath $path -Raw) -split ';')) {
+        if ($part -match '^\s*(?<k>[^=]+)=(?<v>.*)$') {
+            $props[$Matches['k'].Trim().ToLowerInvariant()] = $Matches['v'].Trim()
+        }
+    }
+    if (-not $props.ContainsKey('service') -or -not $props.ContainsKey('username') -or -not $props.ContainsKey('password')) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Server   = $props['service']
+        User     = $props['username']
+        Password = $props['password']
+    }
+}
+
+function Format-ConnStringValue {
+    param([string] $Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    $needsQuoting = $false
+    foreach ($c in @(';', "'", '"')) {
+        if ($Value.Contains($c)) { $needsQuoting = $true }
+    }
+    if ($Value.StartsWith(' ') -or $Value.EndsWith(' ')) { $needsQuoting = $true }
+    if ($needsQuoting) { return "'" + $Value.Replace("'", "''") + "'" }
+    return $Value
+}
+
+function Open-SqlServerConnection {
+    param([object] $Target)
+    Add-Type -AssemblyName 'System.Data' -ErrorAction Stop
+    $cs = 'Server={0};Database=master;User Id={1};Password={2};TrustServerCertificate=True;Encrypt=False;Connect Timeout=5;Application Name=FDO test harness' -f `
+        (Format-ConnStringValue $Target.Server), (Format-ConnStringValue $Target.User), (Format-ConnStringValue $Target.Password)
+    $conn = New-Object System.Data.SqlClient.SqlConnection $cs
+    $conn.Open()
+    return $conn
+}
+
+function Get-SqlServerQueryStats {
+    param([object] $Target)
+    $stats = @{}
+    $conn = Open-SqlServerConnection -Target $Target
+    try {
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandTimeout = 30
+        $cmd.CommandText = @'
+SELECT CONVERT(varchar(66), sql_handle, 1) + ':' + CONVERT(varchar(12), statement_start_offset) AS k,
+       execution_count, total_logical_reads, total_worker_time
+FROM sys.dm_exec_query_stats
+'@
+        $rdr = $cmd.ExecuteReader()
+        while ($rdr.Read()) {
+            $stats[[string] $rdr['k']] = [pscustomobject]@{
+                Exec  = [long] $rdr['execution_count']
+                Reads = [long] $rdr['total_logical_reads']
+                Cpu   = [long] $rdr['total_worker_time']
+            }
+        }
+        $rdr.Close()
+    }
+    finally { $conn.Dispose() }
+    return $stats
+}
+
+function Get-SqlServerStatementText {
+    param([object] $Target, [string[]] $Keys)
+    $map = @{}
+    if ($Keys.Count -eq 0) { return $map }
+    $quoted = ($Keys | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ','
+    $conn = Open-SqlServerConnection -Target $Target
+    try {
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandTimeout = 60
+        $cmd.CommandText = @"
+SELECT CONVERT(varchar(66), qs.sql_handle, 1) + ':' + CONVERT(varchar(12), qs.statement_start_offset) AS k,
+       SUBSTRING(st.text,
+                 (qs.statement_start_offset / 2) + 1,
+                 ((CASE qs.statement_end_offset WHEN -1 THEN DATALENGTH(st.text) ELSE qs.statement_end_offset END - qs.statement_start_offset) / 2) + 1) AS t
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+WHERE CONVERT(varchar(66), qs.sql_handle, 1) + ':' + CONVERT(varchar(12), qs.statement_start_offset) IN ($quoted)
+"@
+        $rdr = $cmd.ExecuteReader()
+        while ($rdr.Read()) { $map[[string] $rdr['k']] = [string] $rdr['t'] }
+        $rdr.Close()
+    }
+    finally { $conn.Dispose() }
+    return $map
+}
+
+function Write-RoundTripReport {
+    param([object] $Target, [hashtable] $Before, [hashtable] $After, [string] $LogPath)
+
+    $exec = [long] 0
+    $reads = [long] 0
+    $cpu = [long] 0
+    $deltas = New-Object System.Collections.Generic.List[object]
+
+    foreach ($k in $After.Keys) {
+        $a = $After[$k]
+        $be = [long] 0; $br = [long] 0; $bc = [long] 0
+        if ($Before.ContainsKey($k)) {
+            $b = $Before[$k]
+            $be = $b.Exec; $br = $b.Reads; $bc = $b.Cpu
+        }
+        $de = $a.Exec - $be
+        $dr = $a.Reads - $br
+        $dc = $a.Cpu - $bc
+        if ($de -lt 0) { $de = 0 }
+        if ($dr -lt 0) { $dr = 0 }
+        if ($dc -lt 0) { $dc = 0 }
+        if (($de -eq 0) -and ($dr -eq 0) -and ($dc -eq 0)) { continue }
+        $exec += $de
+        $reads += $dr
+        $cpu += $dc
+        $deltas.Add([pscustomobject]@{ Key = $k; Exec = $de; Reads = $dr; Cpu = $dc })
+    }
+
+    Write-Host ''
+    Write-Host '  --- SQL Server statements (round-trip proxy) ---' -ForegroundColor Yellow
+    Write-Host ('  Statements executed : {0:N0}' -f $exec)
+    Write-Host ('  Logical reads       : {0:N0}' -f $reads)
+    Write-Host ('  CPU time            : {0:N1}s' -f ($cpu / 1000000.0))
+
+    $top = @($deltas | Sort-Object Exec -Descending | Select-Object -First 200)
+    if ($top.Count -gt 0) {
+        $text = @{}
+        try {
+            $text = Get-SqlServerStatementText -Target $Target -Keys @($top | ForEach-Object { $_.Key })
+        }
+        catch {
+            Write-Warning "  Could not fetch statement text: $($_.Exception.Message)"
+        }
+        Write-Host ''
+        Write-Host '  Most-executed statements:' -ForegroundColor DarkGray
+        foreach ($d in (@($top | Select-Object -First 12))) {
+            $t = $text[$d.Key]
+            if ($null -eq $t) { $t = '' }
+            $t = ($t -replace '\s+', ' ').Trim()
+            if ($t.Length -gt 110) { $t = $t.Substring(0, 110) + '...' }
+            Write-Host ('    {0,9:N0}x {1,13:N0} reads {2,9:N0} ms  {3}' -f $d.Exec, $d.Reads, ($d.Cpu / 1000), $t)
+        }
+
+        if (-not [string]::IsNullOrEmpty($LogPath)) {
+            $stmtPath = [System.IO.Path]::ChangeExtension($LogPath, '.statements.txt')
+            $stmtLines = New-Object System.Collections.Generic.List[string]
+            $stmtLines.Add("Executions`tLogicalReads`tCpuMs`tStatement")
+            foreach ($d in $top) {
+                $t = $text[$d.Key]
+                if ($null -eq $t) { $t = '' }
+                $t = ($t -replace '\s+', ' ').Trim()
+                $stmtLines.Add(("{0}`t{1}`t{2}`t{3}" -f $d.Exec, $d.Reads, [int] ($d.Cpu / 1000), $t))
+            }
+            Set-Content -LiteralPath $stmtPath -Value $stmtLines -Encoding UTF8
+            Write-Host ("  Full statement breakdown (top {0}) written to {1}" -f $top.Count, $stmtPath) -ForegroundColor DarkGray
+        }
+    }
 }
 
 function Resolve-TestNames {
@@ -255,7 +534,30 @@ function Invoke-TestSuite {
     Write-Host "  Command : $($parts.Exe) $($parts.Args -join ' ')"
     Write-Host "  Log     : $($parts.Log)"
 
+    $captureStats = $false
+    $statsTarget = $null
+    $statsBefore = $null
+    if ($RoundTrips -and $parts.Stats -eq 'SqlServer') {
+        try {
+            $statsTarget = Get-SqlServerTarget -InitFile $parts.InitFile
+            if ($null -ne $statsTarget) {
+                $statsBefore = Get-SqlServerQueryStats -Target $statsTarget
+                $captureStats = $true
+                Write-Host "  Stats   : SQL Server statement counters via $($statsTarget.Server)"
+            }
+            else {
+                Write-Warning "[$Name] -RoundTrips requested, but no usable connection settings were found in '$($parts.InitFile)'."
+            }
+        }
+        catch {
+            Write-Warning "[$Name] -RoundTrips: could not snapshot SQL Server counters: $($_.Exception.Message)"
+            $captureStats = $false
+            $statsTarget = $null
+        }
+    }
+
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $startedAt = [datetime]::Now
 
     if ($parts.Clean -and (Test-Path -LiteralPath $parts.Clean -PathType Leaf)) {
         Write-Host "  Clean   : $($parts.Clean)"
@@ -268,9 +570,34 @@ function Invoke-TestSuite {
         }
     }
 
+    $testTiming = $null
+    if ($Timing) { $testTiming = New-Object System.Collections.Generic.List[object] }
+    $pending = $null
+    $firstMarkerTime = $null
+
     Push-Location -LiteralPath $parts.WorkDir
     try {
-        & $parts.Exe @($parts.Args) 2>&1 | Tee-Object -FilePath $parts.Log | Out-Host
+        if ($null -ne $testTiming) {
+            & $parts.Exe @($parts.Args) 2>&1 | ForEach-Object {
+                $text = [string] $_
+                if ($text -match $TestMarkerRegex) {
+                    $markerTime = ConvertFrom-TestMarkerTime -Text $Matches['ts']
+                    if ($null -ne $pending) {
+                        $pending.End = $markerTime
+                        $testTiming.Add($pending)
+                    }
+                    if ($null -eq $firstMarkerTime) { $firstMarkerTime = $markerTime }
+                    $pending = [pscustomobject]@{ Name = $Matches['name']; Start = $markerTime; End = $null; Measured = 0.0 }
+                }
+                elseif (($null -ne $pending) -and ($text -match $ElapsedRegex)) {
+                    $pending.Measured = $pending.Measured + [double] $Matches['sec']
+                }
+                $_
+            } | Tee-Object -FilePath $parts.Log | Out-Host
+        }
+        else {
+            & $parts.Exe @($parts.Args) 2>&1 | Tee-Object -FilePath $parts.Log | Out-Host
+        }
         $code = $LASTEXITCODE
     }
     finally {
@@ -279,10 +606,41 @@ function Invoke-TestSuite {
 
     $stopwatch.Stop()
     $duration = $stopwatch.Elapsed
+    $endedAt = [datetime]::Now
+
+    $unattributed = 0.0
+    if ($null -ne $testTiming) {
+        if ($null -ne $pending) {
+            $pending.End = $endedAt
+            $testTiming.Add($pending)
+        }
+        foreach ($e in $testTiming) {
+            if ($null -eq $e.End) { $e.End = $endedAt }
+            $e | Add-Member -NotePropertyName Duration -NotePropertyValue ([math]::Max(0.0, ($e.End - $e.Start).TotalSeconds)) -Force
+        }
+        if ($null -ne $firstMarkerTime) {
+            $unattributed = [math]::Max(0.0, ($firstMarkerTime - $startedAt).TotalSeconds)
+        }
+    }
 
     $color = if ($code -eq 0) { 'Green' } else { 'Red' }
     Write-Host "  Exit    : $code" -ForegroundColor $color
     Write-Host "  Elapsed : $(Format-Elapsed -Elapsed $duration)"
+
+    if ($null -ne $testTiming) {
+        Write-TimingReport -Entries $testTiming -Unattributed $unattributed -LogPath $parts.Log
+    }
+
+    if ($captureStats) {
+        try {
+            $statsAfter = Get-SqlServerQueryStats -Target $statsTarget
+            Write-RoundTripReport -Target $statsTarget -Before $statsBefore -After $statsAfter -LogPath $parts.Log
+        }
+        catch {
+            Write-Warning "[$Name] -RoundTrips: could not snapshot SQL Server counters: $($_.Exception.Message)"
+        }
+    }
+
     return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration }
 }
 
@@ -310,6 +668,16 @@ if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
 
 Write-Host "Running $($testsToRun.Count) suite(s) against $Configuration tree at:" -ForegroundColor Cyan
 Write-Host "  $BuildRoot"
+if ($Timing) { Write-Host '  Per-test timing is enabled (-Timing).' -ForegroundColor DarkGray }
+if ($RoundTrips) {
+    $statsSuites = @($testsToRun | Where-Object { $TestTable[$_].Stats -eq 'SqlServer' })
+    if ($statsSuites.Count -gt 0) {
+        Write-Host ('  SQL Server round-trip counters are enabled (-RoundTrips) for: {0}.' -f ($statsSuites -join ', ')) -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host '  -RoundTrips was requested, but no selected suite supports it (only SqlServerSpatial does).' -ForegroundColor Yellow
+    }
+}
 
 $totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $results = foreach ($name in $testsToRun) {
