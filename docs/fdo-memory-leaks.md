@@ -125,9 +125,12 @@ The method that worked, repeatedly:
    and judge a fix by whole records — especially the direct-record count — not by small byte deltas,
    which drift between runs.
 5. **Attribute a record to a test** by running one CppUnit registry at a time rather than the whole
-   suite: the registry name is the class name (`UnitTest.exe SelectTest`, `UnitTest.exe GmlTest`; an
-   unmatched name silently runs zero tests). A suite runner loads providers *by name* through
-   `providers.xml`, so after a provider edit the *provider* has to be rebuilt, not just the test.
+   suite: `.\Run-FdoTests.ps1 -Test <suite> -Fixture <registry>` (an unmatched name runs zero tests,
+   which the runner reports as a failure). The registry name is the class's named registration
+   (`FdoSelectTest`, `SelectTests`, ...), or the class name for a hand-run of the executable
+   (`UnitTest.exe SelectTest`, `UnitTest.exe GmlTest`). A suite runner loads providers *by name*
+   through `providers.xml`, so after a provider edit the *provider* has to be rebuilt, not just the
+   test.
 
 ## Instrumentation, when the report cannot name the lost reference
 
@@ -298,9 +301,10 @@ Consequences when editing a grammar:
   latent strand-a-value-on-error risk, but no suite has reported a leak from them — fix those only
   with a test that actually fails part-way through a parse, since the suites stay green either way.
 - To reach the other parsers' error paths, run the FDO Core registries that parse rather than
-  describe: `UnitTest.exe FilterParseTest`, `FilterTest`, `ExpressionTest` (the runner's `-Test FdoCore`
-  runs them all, and `Run-FdoTests.ps1 -List` prints the working directory and executable to run a
-  single registry by hand).
+  describe: `UnitTest.exe FilterParseTest`, `FilterTest`, `ExpressionTest`, or through the runner with
+  `.\Run-FdoTests.ps1 -Test FdoCore -Fixture FilterParseTest, FilterTest, ExpressionTest` (`-Test
+  FdoCore` alone runs them all; `Run-FdoTests.ps1 -List` prints each suite's working directory and
+  executable).
 
 ## Generated parsers: the `.y` is the input, but the generated file is what compiles
 

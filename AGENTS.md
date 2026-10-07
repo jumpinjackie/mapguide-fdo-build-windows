@@ -66,6 +66,19 @@ Rules for working with the source trees:
 - Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
   repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
 
+### Source of truth and history
+
+- The **local SVN working copies are the only source of truth**: `fdo-dbg`/`fdo-rel` for FDO
+  (`https://svn.osgeo.org/fdo/branches/4.2`) and `MgDev` for MapGuide
+  (`https://svn.osgeo.org/mapguide/branches/4.0/MgDev`). Search and read them in place (grep, glob,
+  LSP); the Debug copy is enough for reading code.
+- The GitHub repositories `jumpinjackie/fdo` and `jumpinjackie/fdo_cmake` are **unofficial by-products
+  of abandoned SVN→Git experiments**. They are not authoritative, may be stale or divergent, and must
+  **not** be used as a point of reference or cited for behaviour, capabilities or history.
+- For history, query the working copy with the read-only SVN commands instead of any mirror:
+  `svn log [-l N] [-r REV] path`, `svn blame`, `svn diff -r A:B`, `svn cat -r REV path`, `svn info`.
+  Never `svn commit` (see the commit rule above).
+
 ## Requirements
 
 See [README.md](./README.md) for the full list — SWIG 4.3.1 with `SWIG_DIR` set, Java 8 with
@@ -113,6 +126,7 @@ bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
 .\Run-FdoTests.ps1 -Test Sqlite                  REM one suite, Debug tree
 .\Run-FdoTests.ps1 -Configuration Release -Test Gdal, Ogr, Wms
 .\Run-FdoTests.ps1 -Test Odbc                    REM all ODBC sub-suites
+.\Run-FdoTests.ps1 -Test SqlServerSpatial -Fixture FdoSelectTest   REM one fixture, not the whole suite
 ```
 
 - `-Configuration` selects the tree (`Debug` → `fdo-dbg`, `Release` → `fdo-rel`); the default is
@@ -127,10 +141,13 @@ bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
   pass.
 - The suites that need a database read their connection details from the matching `*Init.txt` next to
   this file; the runner passes it as `initfiletest=...`.
-- To run a **single CppUnit registry** (much faster when chasing a failure, and the way to attribute a
-  leak to one test), run the suite executable from its working directory with the registry name:
-  the name is the test class (`UnitTest.exe SelectTest`, `UnitTest.exe GmlTest`); an unmatched name
-  silently runs zero tests. `.\Run-FdoTests.ps1 -List` prints each suite's `WorkDir` and executable.
+- **Prefer a single fixture over the whole suite while iterating.** `-Fixture <registry>` (with exactly
+  one `-Test` suite) runs only the named CppUnit registries, e.g.
+  `.\Run-FdoTests.ps1 -Test SqlServerSpatial -Fixture FdoSelectTest` — about a minute, versus the
+  ~24 min the full suite takes. The registry name is the class's `CPPUNIT_TEST_SUITE_NAMED_REGISTRATION` name
+  (`FdoSelectTest`, `FdoFilterTest`, `SelectTests`, ...); a name that matches nothing runs zero tests,
+  which the runner reports as a failure rather than a false pass.
+  `.\Run-FdoTests.ps1 -List` prints each suite's `WorkDir` and executable for hand-runs.
 
 WFS and WMS query live public servers, so they depend on hosts that come and go; treat their failures
 as environmental until proven otherwise.
@@ -270,7 +287,8 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
   that exercises it) and check `git status` for files the scripts wrote outside the gitignored paths.
 - **Source-tree changes (FDO or `MgDev`)** — build the affected tree (`fdo_rel.bat -ntp -w=<component>`
   for a provider, or the relevant MapGuide configuration) and run the affected suite with
-  `.\Run-FdoTests.ps1 -Test <suite>` in the matching configuration. Report the suite's result
+  `.\Run-FdoTests.ps1 -Test <suite>` — or, while iterating, a single fixture with
+  `-Fixture <registry>` — in the matching configuration. Report the suite's result
   (`OK (n)`) rather than just "it built".
 - **Memory-leak fixes** — state which rule above the defect broke, fix it, re-run the affected suite
   in Debug, and say what the leak probe showed before and after (a refcount, a `_CrtMemDifference`

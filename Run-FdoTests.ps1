@@ -18,6 +18,14 @@
     OdbcExcel, OdbcMySql, OdbcOracle, OdbcSqlServer, OdbcText, Ogr, PostGis,
     Sdf, Shp, Sqlite, SqlServerSpatial, Wfs, Wms.
 
+.PARAMETER Fixture
+    One or more CppUnit registry (fixture) names to run instead of the whole
+    suite. The name is the class's named registration, e.g. FdoSelectTest,
+    FdoFilterTest, SelectTests. Requires exactly one -Test suite. Prefer this
+    over a full suite when iterating: it is far faster and attributes a
+    failure or a leak to a single test. A name that matches nothing runs zero
+    tests, which this runner reports as a failure.
+
 .PARAMETER List
     Print the available suites (and the command each would run for the
     selected -Configuration) and exit without running anything.
@@ -59,6 +67,9 @@
 .EXAMPLE
     .\Run-FdoTests.ps1 -Test SqlServerSpatial -Timing -RoundTrips
 
+.EXAMPLE
+    .\Run-FdoTests.ps1 -Test SqlServerSpatial -Fixture FdoSelectTest -Timing
+
 .NOTES
     If a suite needs third-party environment variables (FDOORACLE, FDOMYSQL,
     FDOPOSTGRESQL), source the matching fdoenv*.bat first, or set the
@@ -77,6 +88,8 @@ param(
     [string] $Configuration = 'Debug',
 
     [string[]] $Test = @('All'),
+
+    [string[]] $Fixture,
 
     [switch] $List,
 
@@ -219,7 +232,10 @@ $TestTable = [ordered]@{
 $OdbcSuites = @('OdbcAccess', 'OdbcDbase', 'OdbcExcel', 'OdbcMySql', 'OdbcOracle', 'OdbcSqlServer', 'OdbcText')
 
 function Get-CommandParts {
-    param([string] $Name)
+    param(
+        [string] $Name,
+        [string[]] $Fixture
+    )
     $def = $TestTable[$Name]
     $cfg = $def[$Configuration]
     $wd  = Join-Path $BuildRoot $cfg.WorkDir
@@ -227,8 +243,13 @@ function Get-CommandParts {
     $log = Join-Path $LogRoot $cfg.Log
     $clean = if ($cfg.Clean) { Join-Path $BuildRoot $cfg.Clean } else { $null }
 
+    # Positional arguments name the CppUnit registries to run. -Fixture selects
+    # specific fixtures; otherwise the suite's own selector is used. No
+    # positional argument at all means "every registry in the executable".
+    $registries = if ($Fixture) { @($Fixture) } elseif ($def.Suite) { @($def.Suite) } else { @() }
+
     $argList = New-Object System.Collections.Generic.List[string]
-    if ($def.Suite) { $argList.Add($def.Suite) }
+    foreach ($registry in $registries) { $argList.Add($registry) }
     $argList.Add('-NoWAIT')
     if ($def.InitFile) { $argList.Add("initfiletest=$(Join-Path $BuildRoot $def.InitFile)") }
 
@@ -516,16 +537,19 @@ function Resolve-TestNames {
 }
 
 function Invoke-TestSuite {
-    param([string] $Name)
-    $parts = Get-CommandParts -Name $Name
+    param(
+        [string] $Name,
+        [string[]] $Fixture
+    )
+    $parts = Get-CommandParts -Name $Name -Fixture $Fixture
 
     if (-not (Test-Path -LiteralPath $parts.WorkDir -PathType Container)) {
         Write-Warning "[$Name] SKIPPED: working directory not found: $($parts.WorkDir)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null }
+        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false }
     }
     if (-not (Test-Path -LiteralPath $parts.Exe -PathType Leaf)) {
         Write-Warning "[$Name] SKIPPED: executable not found: $($parts.Exe)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null }
+        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false }
     }
 
     Write-Host ''
@@ -641,7 +665,18 @@ function Invoke-TestSuite {
         }
     }
 
-    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration }
+    # A fixture name that matches no registry makes CppUnit run zero tests and
+    # still exit 0; surface that as a failure rather than a false green.
+    $zeroTests = $false
+    if ($Fixture -and (Test-Path -LiteralPath $parts.Log -PathType Leaf)) {
+        $result = [regex]::Match((Get-Content -LiteralPath $parts.Log -Raw), 'OK \((?<n>\d+) tests?\)')
+        if ($result.Success -and ([int] $result.Groups['n'].Value) -eq 0) {
+            $zeroTests = $true
+            Write-Warning "[$Name] -Fixture ($($Fixture -join ', ')) matched no tests."
+        }
+    }
+
+    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration; ZeroTests = $zeroTests }
 }
 
 # --- Entry point -----------------------------------------------------------
@@ -653,6 +688,7 @@ if ($List) {
     }
     Write-Host ''
     Write-Host "Pseudo-names: All (every suite), Odbc (all ODBC sub-suites)."
+    Write-Host "Add -Fixture <registry> with a single -Test suite to run specific CppUnit fixtures instead of the whole suite."
     return
 }
 
@@ -662,12 +698,20 @@ if (-not $testsToRun) {
     exit 0
 }
 
+# A fixture only makes sense against one executable; more than one suite
+# would apply the name to suites it does not belong to.
+if ($Fixture -and $testsToRun.Count -ne 1) {
+    Write-Warning ('-Fixture requires exactly one suite via -Test, but {0} were selected ({1}).' -f $testsToRun.Count, ($testsToRun -join ', '))
+    exit 2
+}
+
 if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
     New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 }
 
 Write-Host "Running $($testsToRun.Count) suite(s) against $Configuration tree at:" -ForegroundColor Cyan
 Write-Host "  $BuildRoot"
+if ($Fixture) { Write-Host ("  Fixtures: {0}" -f ($Fixture -join ', ')) -ForegroundColor DarkGray }
 if ($Timing) { Write-Host '  Per-test timing is enabled (-Timing).' -ForegroundColor DarkGray }
 if ($RoundTrips) {
     $statsSuites = @($testsToRun | Where-Object { $TestTable[$_].Stats -eq 'SqlServer' })
@@ -681,7 +725,7 @@ if ($RoundTrips) {
 
 $totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $results = foreach ($name in $testsToRun) {
-    Invoke-TestSuite -Name $name
+    Invoke-TestSuite -Name $name -Fixture $Fixture
 }
 $totalStopwatch.Stop()
 
@@ -691,6 +735,9 @@ foreach ($r in $results) {
     $elapsedText = if ($null -ne $r.Duration) { ' [' + (Format-Elapsed -Elapsed $r.Duration) + ']' } else { '' }
     if ($r.Skipped) {
         Write-Host ("  {0,-18} SKIPPED" -f $r.Name) -ForegroundColor Yellow
+    }
+    elseif ($r.ZeroTests) {
+        Write-Host ("  {0,-18} FAILED (no tests matched the fixture){1}" -f $r.Name, $elapsedText) -ForegroundColor Red
     }
     elseif ($r.ExitCode -eq 0) {
         Write-Host ("  {0,-18} OK (exit 0){1}" -f $r.Name, $elapsedText) -ForegroundColor Green
@@ -703,7 +750,7 @@ foreach ($r in $results) {
 Write-Host ''
 Write-Host ("  Total elapsed: {0}" -f (Format-Elapsed -Elapsed $totalStopwatch.Elapsed)) -ForegroundColor Cyan
 
-$failed = @($results | Where-Object { -not $_.Skipped -and $_.ExitCode -ne 0 })
+$failed = @($results | Where-Object { -not $_.Skipped -and (($_.ExitCode -ne 0) -or $_.ZeroTests) })
 if ($failed.Count -gt 0) {
     exit 1
 }
