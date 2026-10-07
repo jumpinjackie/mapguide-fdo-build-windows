@@ -80,6 +80,14 @@ They are listed in rough order of how often they were the answer.
 - **A C failure path that returns an error without freeing what it just allocated.** A failed
   `mysql_real_connect` that returns without `mysql_close`, a `PQexec` result assigned over a previous
   one, a dropped `new[]` buffer. Provider driver code is C, so nothing is automatic.
+- **A value the parser discards on its error path.** A grammar whose actions hand a freshly created
+  object to a *second* owner (here `AddNode()`/`AddNodeToDelete()` AddRef into the parse context)
+  leaves the parser holding a reference it only releases when the symbol reaches a reduction. A syntax
+  error discards symbols instead, so every node on the stack at the error leaks — and for a grammar
+  that asks "is this a constraint I understand?", an error is the normal answer, not an exceptional
+  one. Fix it with `%destructor` declarations (see **Generated parsers** below); releasing the values
+  from the parse context's abort path instead would over-release the nodes whose stack reference an
+  action already consumed.
 - **A recursion that re-references its own result.** A function that hands back an owned reference and
   then returns `FDO_SAFE_ADDREF(Recurse(...))` drops the reference the recursive call returned — one
   leaked reference per level of depth. This is what kept a WMS capabilities tree (and its whole style
@@ -208,6 +216,7 @@ new code. Paths are relative to the FDO source root.
 | PostGIS | `postgis_execute()` overwrote `curs->stmt_result` instead of clearing it on re-execution | The cached PVC insert/update cursors run the same prepared statement once per row, so every row but the last leaked a libpq `PGresult` and everything it holds — the largest item in the PostGIS report. |
 | PostGIS | Two `PQexec(conn, "COMMIT")` results in `postgis_run_sql` were discarded | The `(void)PQexec(...)` calls that close an open transaction before DDL threw their `PGresult` away, once per DDL statement. Every other `PQexec` in the driver already cleared its result. |
 | PostGIS | `FdoRdbmsPostGisFilterProcessor::ProcessSpatialDistanceCondition` kept the counted reference `GetGeometry()` returns in a raw pointer | `geom = dynamic_cast<...>(spatialFilter->GetGeometry())` leaked the test geometry of every spatial and distance condition; the byte array `FdoGeometryValue::GetGeometry()` AddRefs was raw too and leaked with it. |
+| PostGIS | The constraint grammar stranded the semantic values of every symbol the parser discards on a syntax error | `Utilities/Common/Src/Parse/yyConstraint.y`, `yyConstraint.cpp`, `yyConstraintWin.cpp` | Each node-producing nonterminal's value is an owned reference (created with `Create()`, then AddRef'd into the parse context by `AddNode()`/`AddNodeToDelete()`), and the parser never released its own copy when a syntax error discarded a partially built constraint — which is the *normal* path for the check clauses a provider skips. `%destructor` declarations for the 18 node-producing nonterminals, plus the equivalent destructor in both generated parsers, release it: 6 direct records and the 12 objects below them (888 B in 18 allocations) go, with no new record family. See **Generated parsers** below — the generated files could not be reproduced by today's generators and are hand-patched in step with the `.y`. |
 | SQLite | The r8375 spatial-context test dropped the counted references of its `Create()` results and chained getters | `vals->Add(FdoPropertyValue::Create(...))` (40 B each, the only direct records) and `schemas->GetItem(0)->GetClasses()->GetItem(name)`. It also parked `GetGeometryProperty()` — which returns `FDO_SAFE_ADDREF(m_geometry)` — in a raw pointer, and that single lost reference into a deep-copied schema held the whole graph alive: 5,712 B in 75 records, 72 of them indirect, all in one test. Release the `Create()`s and the graph frees itself. |
 
 ## Cycles that are recorded, not fixed
@@ -235,25 +244,87 @@ future pass recognises them instead of rediscovering them:
   against them (`FdoSmLpObjectPropertyDefinition::AddReferenceLoopError` → `FdoSmError` →
   `FdoSchemaException`), built by the association and deliberate-error tests. Breaking it needs the
   error/association ownership in the schema manager to change.
-- **The parser's error path (PostGIS constraints).** Six direct records — `FdoIdentifier`s and
-  `FdoDataValueCollection`s — allocated while parsing a check clause that turns out not to be a
-  constraint the parser understands, which the constraint reader treats as normal. The grammar's own
-  reference (the `$$` of the reduction that created it) is never released because on a syntax error
-  the enclosing reductions never run, so their `FDO_SAFE_RELEASE($1)` cleanup never happens. It cannot
-  be fixed from `Abort()` (releasing twice over-releases nodes whose grammar reference *was* consumed
-  before the error, and releasing "down to one reference" corrupts nodes reachable from another
-  discarded node); the correct fix is a bison `%destructor`, which means regenerating a large
-  machine-generated file. See the next section before touching it.
+- **The parser's error path** — *fixed*, and worth knowing about because it is the one leak family
+  here whose fix is not visible in the compiled code you are reading. Six direct records (3
+  `FdoIdentifier`s, 3 `FdoDataValueCollection`s) were stranded while parsing a check clause that turns
+  out not to be a constraint the parser understands, which the constraint reader treats as normal. The
+  grammar's own reference (the `$$` of the reduction that created it) was never released because on a
+  syntax error the enclosing reductions never run, so their `FDO_SAFE_RELEASE($1)` cleanup never
+  happens. It cannot be fixed from `FdoCommonParse::Abort()` (releasing twice there over-releases
+  nodes whose grammar reference *was* consumed before the error, and releasing "down to one reference"
+  corrupts nodes reachable from another discarded node); the fix is `%destructor` declarations in
+  `yyConstraint.y` for the node-producing nonterminals, mirrored by hand into both generated parsers.
+  See the next section before touching it.
 - **The FDO Core XML/deserialization cycles** — `collection → XML context → merge context →
   collection` was detached before the throwing call in the fixed cases; any remaining ones need the
   same kind of semantic change.
 
-## Generated parsers are checked in — editing the `.y` does nothing
+## How `FdoCommonParse` owns the nodes the grammar builds
 
-`Utilities/Common/Src/Parse/yyConstraint.y`, `Fdo/Unmanaged/Src/Fdo/Parse/yyFilter.y` and
-`yyExpression.y` are inputs to a `script*`/`script*_linux` sed pipeline (yacc output → `yy*.cpp`). The
-**generated `yy*.cpp` is what is checked into SVN and compiled** — it is listed in the source list and
-the toolchain has no yacc. A grammar-rule change therefore has to be accompanied by regenerating and
-committing the generated file; do not edit a `.y` and expect behaviour to change. This is also why a
-leak that lives in the parser's error handling (the values yacc discards on a syntax error, which only
-a `%destructor` can release) is not a small fix.
+Worth knowing before blaming (or trusting) the constraint/filter parsers, because their reference
+counts look odd when read one action at a time. `FdoCommonParse` is the context object the generated
+parsers are handed (`Utilities\Common\Inc\Parse\Parse.h`), and it has two collections: `m_nodes`
+(what `AddNode()`/`Node_Add()` fills) and `m_nodesToDelete` (what `AddNodeToDelete()` fills — the
+`ORConstraint` rules use it for the value collections they assemble and copy from). Both are released
+by `Clean()`, which runs after a successful parse and after `Abort()`; `Abort()` itself only clears
+`m_nodes` (its commented-out loop that released each node *twice* is the failed attempt to compensate
+for the ownership rule below).
+
+The rule every node-producing action follows is: create the node with `Create()` (one reference,
+owned by the grammar), hand it to `AddNode()`/`AddNodeToDelete()` (which AddRefs it into the context —
+two references), and leave the grammar's copy in the semantic value. From there:
+
+- The context's reference is released by `Clean()` (success) or `Abort()`+`Clean()` (failure).
+- The grammar's reference is released by whichever parent rule consumes the value with
+  `FDO_SAFE_RELEASE($n)`, or transferred into `m_root` by `SetRoot()` in the `fdo : Constraint` action
+  — that one is a *transfer*, not an AddRef, which is why nothing on the `YYACCEPT` path may release
+  the start symbol's value.
+- A symbol that never reaches a reduction has neither consumer: a syntax error discards it, so the
+  grammar's reference is stranded. That is the leak `%destructor` declarations fix, and the reason the
+  destructors must not run on the accept path.
+
+Consequences when editing a grammar:
+
+- Add a node-producing nonterminal and it needs a `%destructor` entry in the `.y`, **and** a matching
+  case in both generated parsers' destructor switches (the generated files are what compile; see the
+  next section for the symbol numbers).
+- Values that are *not* owned references must not be given a destructor: the lexer fills only the
+  union member a token actually carries (a borrowed `FdoString*` for identifiers and literals, a value
+  for the numeric tokens), so several token symbols share union slots they never assign.
+- The constraint parser's error path is not exotic: a provider schema reader asks it "is this check
+  clause a constraint I understand?", and the answer is legitimately "no" (PostGIS's
+  `FdoSmPhRdPostGisConstraintReader` skips what it cannot parse). The other three grammars
+  (`yyFilter`, `yyExpression`, `yyFgft`) use the same create-then-`AddNode` pattern and so share the
+  latent strand-a-value-on-error risk, but no suite has reported a leak from them — fix those only
+  with a test that actually fails part-way through a parse, since the suites stay green either way.
+- To reach the other parsers' error paths, run the FDO Core registries that parse rather than
+  describe: `UnitTest.exe FilterParseTest`, `FilterTest`, `ExpressionTest` (the runner's `-Test FdoCore`
+  runs them all, and `Run-FdoTests.ps1 -List` prints the working directory and executable to run a
+  single registry by hand).
+
+## Generated parsers: the `.y` is the input, but the generated file is what compiles
+
+`Utilities/Common/Src/Parse/yyConstraint.y`, `Fdo/Unmanaged/Src/Fdo/Parse/yy{Filter,Expression}.y` and
+`Fdo/Unmanaged/Src/Geometry/Parse/yyFgft.y` are the grammar inputs. The FDO tree carries
+`build_parse.sh` (Linux) and `build_parse.bat` (Windows), which run the generator plus the `script*` sed
+pipelines that rename the parser's symbols into the `fdo_constraint_yy`-style namespace and move its
+globals into the shared `FdoCommonParse` context — but the **generated `yy*.cpp` is what is checked
+into SVN and compiled**, and the checked-in copies are old enough that today's generators no longer
+reproduce them:
+
+- The `yy*Win.cpp` files (the ones this repository compiles) are **GNU Bison 1.875** output;
+  `FdoCommon.vcproj` carries a custom build step that regenerates them from the `.y` with whatever
+  `bison` is on the local `PATH`, so the `.y` is authoritative for a regenerating build but a modern
+  bison would produce a very different file.
+- The Linux `yy*.cpp` files are **byacc 1.9** (FreeBSD yacc) output, while current distros ship byacc
+  2.0 or GNU bison 3.8, whose skeletons differ by ~1,000 lines and whose new globals the sed pipeline
+  does not rewrite.
+
+So the working rule: **change the `.y` (it records the intent and is what a regeneration consumes) and
+then hand-apply the equivalent change to the generated parsers**, keeping the variants' symbol numbers
+straight — bison numbers the constraint grammar's nonterminals `65`-`82` (from its `yytname`), byacc
+numbers them `314`-`331` and needs a `yystos[state]` table that byacc 1.9 does not emit. A grammar-rule
+change with no generated-file change does nothing at all.
+
+A leak in the parser's error handling is in this category: only `%destructor` declarations release the
+values yacc discards on a syntax error, and those generate code into the files above.

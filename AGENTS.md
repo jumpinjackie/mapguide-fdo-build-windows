@@ -177,13 +177,15 @@ A Debug build is required for all of these; a Release run will not report anythi
    that are visible on inspection — an unwrapped `Create()`, a chained getter, a raw member pointing
    back at its owner. [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#the-recurring-shapes) is
    the checklist.
-2. **CRT debug heap.** With `_CRTDBG_MAP_ALLOC` defined before `<crtdbg.h>` and
-   `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)` set in the test's `main`, the
-   Debug CRT dumps every block still allocated at exit, with the `new` site's file and line. Expect
-   noise: deliberately-live global and singleton state appears in that dump, so compare against a
-   known-clean run of the same suite and only chase the difference.
-   `_CrtMemCheckpoint` / `_CrtMemDifference` around a single test pinpoints what that test allocates
-   and keeps.
+2. **CRT debug heap.** The Debug configurations link `MultiThreadedDebugDLL` (the debug CRT, `/MDd`
+   — see `Utilities\Common\FdoCommon.vcxproj`), so the CRT's own leak check is available. With
+   `_CRTDBG_MAP_ALLOC` defined before `<crtdbg.h>` and
+   `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)` set in the suite's `main` — each
+   suite has its own, e.g. `Providers\SQLite\Src\UnitTest\UnitTest.cpp` — the Debug CRT dumps every
+   block still allocated at exit, with the `new` site's file and line. Expect noise: deliberately-live
+   global and singleton state appears in that dump, so compare against a run of the *unmodified* tree
+   and only chase the difference. `_CrtMemCheckpoint` / `_CrtMemDifference` around a single test
+   pinpoints what that test allocates and keeps, which is the precise version of the same idea.
 3. **Visual Studio's Memory Usage tool** (Debug, native heap snapshots) or **Application Verifier**
    (Basics → Leak) for a second, independent view; **Dr. Memory** (`drmemory -- <exe>`) works for
    runs that cannot use the debug heap.
@@ -203,19 +205,38 @@ ownership chain, and the two useful questions are *is anything still pointing at
 reference, fix the allocation site) and *is the only thing pointing at it another leaked object?*
 (then find the root of that group; the rest usually collapses). Group the records by allocation frame
 and by the test that ran, fix in batches, re-run the whole suite, and judge by whole records rather
-than small size deltas.
+than small size deltas. Before/after a fix, compare the *sets of record signatures* (the top few
+frames of each) rather than the totals: a fix must remove records and add none, and that check is
+what catches a change that trades a leak for a worse one. Suites you did not touch must come back
+with the same record counts they had before.
 [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#how-to-read-a-leak-report) has the details and
 the case studies.
 
-## Generated parsers are checked in — editing the `.y` does nothing
+## Generated parsers: the `.y` files are inputs, but they are inert in this build
 
-`Utilities\Common\Src\Parse\yyConstraint.y`, `Fdo\Unmanaged\Src\Fdo\Parse\yyFilter.y` and
-`yyExpression.y` are inputs to a `script*`/`script*_linux` sed pipeline (yacc output → `yy*.cpp`), and
-the **generated `yy*.cpp` is what is checked into SVN and compiled**. A grammar change has to be
-accompanied by regenerating and committing the generated file. This is also why a leak that lives in
-the parser's *error* handling — the values yacc discards on a syntax error, which only a `%destructor`
-can release — is not a small fix: see
-[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#generated-parsers-are-checked-in--editing-the-y-does-nothing).
+The four grammars — `Utilities\Common\Src\Parse\yyConstraint.y`, `Fdo\Unmanaged\Src\Fdo\Parse\yyFilter.y`
+and `yyExpression.y`, and `Fdo\Unmanaged\Src\Geometry\Parse\yyFgft.y` — are the inputs to the
+`build_parse.bat` pipeline (`bison -y -ldv` plus the `script3`/`script*` sed scripts, which rename the
+parser's symbols into the `fdo_constraint_yy`-style namespace and move its globals into the shared
+`FdoCommonParse` context). **That pipeline does not run in a normal build here**: every one of the four
+custom build steps is marked `ExcludedFromBuild="true"` for all configurations in *both* project
+formats (`FdoCommon.vcproj`/`.vcxproj` for the constraint grammar, `Fdo.vcproj`/`.vcxproj` for the
+filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
+
+- The checked-in generated files are the source of truth: `Src\Parse\yy*Win.cpp` (which is what
+  `FdoCommon.vcxproj` compiles) and `Inc\Parse\yy*Win.h`. **A grammar change that is not mirrored
+  into them does nothing at all.**
+- Do not re-enable those custom steps casually. The sed scripts and `Parse.h` are written for **GNU
+  Bison 1.875** output — they rewrite that skeleton's globals (`yyss`/`yyvs`/`yychar`/`yylval`/…) into
+  the `FdoCommonParse` context members, including the Windows-only fixed-size stack arrays — and a
+  current bison (3.x) emits a different skeleton with a parameterless `yyparse` and function-local
+  lookahead state, which the pipeline and the callers do not expect. The same is true of the Linux
+  copies, which are byacc 1.9 output while distros now ship byacc 2.0.
+- So a grammar change is a *hand* change in the generated file(s), keeping the two variants' symbol
+  numbers straight (bison numbers this grammar's nonterminals `65`-`82`, byacc `314`-`331`).
+  [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#generated-parsers-the-y-is-the-input-but-the-generated-file-is-what-compiles)
+  has the details, and the `%destructor` work recorded there is the worked example — including why a
+  leak in the parser's *error* handling cannot be fixed from `FdoCommonParse::Abort()`.
 
 ## Platform notes
 
