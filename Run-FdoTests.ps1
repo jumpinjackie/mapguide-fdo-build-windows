@@ -536,6 +536,17 @@ function Resolve-TestNames {
     return @($resolved | Where-Object { -not $seen[$_] -and ($seen[$_] = $true) })
 }
 
+# --- Result detection ------------------------------------------------------
+# CppUnit prints exactly one summary at the end of a run, in one of two shapes
+# depending on the outputter the suite installs:
+#   TextOutputter     : "OK (n tests)" | "!!!FAILURES!!!" + "Run:  n   Failures: n   Errors: n"
+#   CompilerOutputter : "OK (n)"       | "Failures !!!"   + "Run: n   Failure total: n   Failures: n   Errors: n"
+# The exit code is the primary pass/fail signal, but a suite whose executable
+# does not propagate CppUnit's result (the GDAL provider's did not) exits 0 on
+# failure; these patterns let the log act as a second opinion.
+$CppUnitSuccessRegex = 'OK \((?<n>\d+)(?: tests?)?\)'
+$CppUnitFailureRegex = '(?m)^\s*(?:!!!FAILURES!!!|Failures !!!)\s*$|(?m)^\s*Run:\s*\d+\s+.*?(?:Failure total|Failures|Errors):\s*[1-9]'
+
 function Invoke-TestSuite {
     param(
         [string] $Name,
@@ -665,18 +676,32 @@ function Invoke-TestSuite {
         }
     }
 
-    # A fixture name that matches no registry makes CppUnit run zero tests and
-    # still exit 0; surface that as a failure rather than a false green.
+    # The log is only consulted once the run has finished and its output has
+    # been flushed to the file.
     $zeroTests = $false
-    if ($Fixture -and (Test-Path -LiteralPath $parts.Log -PathType Leaf)) {
-        $result = [regex]::Match((Get-Content -LiteralPath $parts.Log -Raw), 'OK \((?<n>\d+) tests?\)')
-        if ($result.Success -and ([int] $result.Groups['n'].Value) -eq 0) {
-            $zeroTests = $true
-            Write-Warning "[$Name] -Fixture ($($Fixture -join ', ')) matched no tests."
+    $logFailures = $false
+    if (Test-Path -LiteralPath $parts.Log -PathType Leaf) {
+        $logText = Get-Content -LiteralPath $parts.Log -Raw
+
+        # A fixture name that matches no registry makes CppUnit run zero tests
+        # and still exit 0; surface that as a failure rather than a false green.
+        if ($Fixture) {
+            $result = [regex]::Match($logText, $CppUnitSuccessRegex)
+            if ($result.Success -and ([int] $result.Groups['n'].Value) -eq 0) {
+                $zeroTests = $true
+                Write-Warning "[$Name] -Fixture ($($Fixture -join ', ')) matched no tests."
+            }
+        }
+
+        # Some executables do not propagate CppUnit's result to their exit code,
+        # so a failing run reports exit 0. Trust the log in that case too.
+        if (($code -eq 0) -and [regex]::IsMatch($logText, $CppUnitFailureRegex)) {
+            $logFailures = $true
+            Write-Warning "[$Name] the log reports CppUnit failures but the executable exited 0."
         }
     }
 
-    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration; ZeroTests = $zeroTests }
+    return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration; ZeroTests = $zeroTests; LogFailures = $logFailures }
 }
 
 # --- Entry point -----------------------------------------------------------
@@ -739,6 +764,9 @@ foreach ($r in $results) {
     elseif ($r.ZeroTests) {
         Write-Host ("  {0,-18} FAILED (no tests matched the fixture){1}" -f $r.Name, $elapsedText) -ForegroundColor Red
     }
+    elseif ($r.LogFailures) {
+        Write-Host ("  {0,-18} FAILED (log reports failures; exit 0){1}" -f $r.Name, $elapsedText) -ForegroundColor Red
+    }
     elseif ($r.ExitCode -eq 0) {
         Write-Host ("  {0,-18} OK (exit 0){1}" -f $r.Name, $elapsedText) -ForegroundColor Green
     }
@@ -750,7 +778,7 @@ foreach ($r in $results) {
 Write-Host ''
 Write-Host ("  Total elapsed: {0}" -f (Format-Elapsed -Elapsed $totalStopwatch.Elapsed)) -ForegroundColor Cyan
 
-$failed = @($results | Where-Object { -not $_.Skipped -and (($_.ExitCode -ne 0) -or $_.ZeroTests) })
+$failed = @($results | Where-Object { -not $_.Skipped -and (($_.ExitCode -ne 0) -or $_.ZeroTests -or $_.LogFailures) })
 if ($failed.Count -gt 0) {
     exit 1
 }

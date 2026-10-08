@@ -139,6 +139,10 @@ bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
   and so on). The script exits non-zero if any suite failed, and reports `SKIPPED` when the working
   directory or the executable is missing — a skipped suite is a build that has not been done, not a
   pass.
+- A suite is judged first by its exit code, with the tee'd log as a second signal: if the log reports
+  CppUnit failures (`!!!FAILURES!!!` or `Failures !!!`) while the executable exited 0, the suite is
+  reported as `FAILED` rather than `OK`. That covers an executable which does not propagate CppUnit's
+  result to its exit code — the GDAL provider's did not.
 - The suites that need a database read their connection details from the matching `*Init.txt` next to
   this file; the runner passes it as `initfiletest=...`.
 - **Prefer a single fixture over the whole suite while iterating.** `-Fixture <registry>` (with exactly
