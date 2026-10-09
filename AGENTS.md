@@ -16,6 +16,13 @@ same code. [CPP_STYLE.md](./CPP_STYLE.md) is the ownership contract;
 [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) is the catalogue of real leaks, the shapes they
 take, and how each one was found.
 
+## Current cycle
+
+**API/ABI mode: `freeze`** — FDO upstream; mirrors the sibling
+[mapguide-fdo-docker-build](https://github.com/jumpinjackie/mapguide-fdo-docker-build), which owns the
+mode because both repos build the same FDO sources. Rules for each mode:
+[Policy gate](#policy-gate-which-mode-are-we-in).
+
 ## Repository model
 
 ### Durable vs. generated content
@@ -65,6 +72,13 @@ Rules for working with the source trees:
   `mg-install\rel64` are built one at a time. The same applies to the two FDO trees.
 - Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
   repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
+- Fixes that land in the sibling repo's FDO working copies have to be mirrored here, because the two
+  repos build the same upstream branch and neither commits to SVN. The sibling exports its uncommitted
+  FDO diff as `patches/pending.patch`; from each FDO tree root (`fdo-dbg` **and** `fdo-rel`) run
+  `svn patch <path-to-pending.patch>`, after `svn update`-ing to at least the revision its
+  `(revision N)` headers name. Its currently-pending set is the NULL-`this` fixes in
+  `FdoInternalDataValue::Compare` / `FdoDataValue::Compare` and the nullable `SmartCast` call sites
+  (see [CPP_STYLE.md](./CPP_STYLE.md)) — delete this sentence once they are committed upstream.
 
 ### Source of truth and history
 
@@ -295,6 +309,82 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
   MapGuide ones: `mapguide_dbg_setup.bat`/`mapguide_rel_setup.bat` write `mapguide_40_revision.txt`
   into `%CD%` and `mapguide_dbg.bat`/`mapguide_rel.bat` read it back from `%CD%`, so those four must be
   run from the repository root or the version stamping silently uses the wrong file (or none).
+- Platform initialisation is split in the FDO sources and must stay split: GCC builds run
+  `__attribute__((constructor))` hooks, Windows uses `DllMain`, and the two live in opposite arms of
+  `#ifndef _WIN32`/`#else` in `Fdo.cpp`, `GeometryDll.cpp` and the GenericRdbms providers.
+  `__attribute__((visibility(...)))` and friends are GCC/Clang only, so moving one out of its guard
+  breaks this build; the hook names are unique because default visibility interposes by link order on
+  ELF, so do not "tidy" those either.
+
+## FDO API/ABI compatibility
+
+A provider is a separate DLL that the core loads at runtime, so core and providers have an ABI
+relationship even though they ship from one tree. Most changes under the FDO trees cannot affect it —
+and knowing which ones can is what makes an "is this a breaking change?" question quick to answer.
+
+### What is actually public
+
+The shipped surface is what `fdo-build\{dbg64,rel64}` produces — the `Inc`/`Lib64`/`Bin` trees that
+`mapguide_*_setup.bat` stages into `MgDev\Oem\FDO`. Judge it from the project files rather than from
+directory names, because some of it never forms a boundary at all:
+
+- `Utilities\SchemaMgr` is a **static library** in both project formats (`SchemaMgr.vcxproj` →
+  `ConfigurationType>StaticLibrary`; the legacy `SchemaMgr.vcproj` is `4`), so it is linked into each
+  provider rather than shared. Its headers are a compile-time boundary only and cannot break a binary
+  swap.
+- `Utilities\TestCommon` is test scaffolding and is not shipped. The provider-internal headers under
+  `Providers\**` are not part of the SDK include tree either.
+
+The provider↔core contract is a single symbol, `CreateConnection`, resolved with `GetProcAddress` /
+`dlsym` (see `Fdo\Unmanaged\Src\Fdo\ClientServices\ProviderDef.h`). `_load`/`_unload` are not part of
+it, and on Windows those hooks do not exist at all — this platform initialises through `DllMain`.
+
+### Same source is not the same ABI
+
+This is the rule that actually bites when swapping DLLs, and it has no Linux counterpart:
+
+- A provider DLL and `FDO.dll` must come from the **same toolset and the same flag flavour**. Mixing
+  `/MD` with `/MDd`, or differing `_ITERATOR_DEBUG_LEVEL`, gives link-time mismatch diagnostics where
+  the objects are static and mismatched heaps — or worse — across a DLL boundary where they are not.
+  Copying a DLL between two configurations of the same source is therefore not a compatibility test.
+
+### Checking a change
+
+1. **Source.** `svn diff -r A:B --summarize` in the FDO tree, then keep only the paths under an `Inc`
+   directory. For those, `svn diff -r A:B <paths> | grep -E '^[-+].*virtual'` answers the question that
+   matters most: was a virtual function added, removed or reordered?
+2. **Layout.** `cl /d1reportSingleClassLayout<Name>` (or `/d1reportAllClassLayout`) prints the real
+   member offsets *and* the vtable slot order, which is a stronger check than a `sizeof` probe. Use it
+   whenever a class in a shipped header gains, loses or reorders a member.
+3. **Exports.** `dumpbin /exports <dll>` — or `llvm-readobj --coff-exports` / `objdump -p` — over the
+   old and new build. A removed export is only a break if something imported it, so look for an import
+   of it in the DLLs that consume it before reporting one.
+4. **Layout-neutral by construction**, and therefore not worth a check: `FdoPtr<T>` holds exactly one
+   `T*`, so an `FdoPtr<X>` member becoming a plain `X*` keeps its size, alignment and offset, and
+   adding a `static` member function — or an override of a virtual that already exists in a base class
+   — does not change the vtable. Adding a **data member** to a class in a shipped header is the change
+   that is not safe, and neither is appending a virtual "at the end": that still breaks every provider
+   that implements the interface.
+
+### Policy gate: which mode are we in?
+
+The mode is the line in [Current cycle](#current-cycle) at the top of this file. Read it before
+touching anything under an `Inc` directory of `fdo-dbg`/`fdo-rel`, before removing or renaming anything
+a shipped DLL exports, and state the mode you assumed when you report the change.
+
+- **`freeze`** — the maintenance cycle. The checks above are mandatory for anything that could reach
+  the shipped surface, and a change that would break it is escalated, not made: if a task seems to need
+  one, stop and ask rather than reformulating the task so that it avoids the question.
+- **`additive`** — still shipping, no longer changing shape. New interfaces, new classes and new
+  non-virtual members are fine; changing an existing virtual in any way, or a data member of a shipped
+  class, is not.
+- **`free`** — feature development. Change the surface deliberately, but not silently: name the removed
+  or renamed symbols and the changed layouts in the change description. The sibling repo has to land
+  the same source change at the same time — `mapguide` consumes the FDO SDK out of
+  `fdo-build\{dbg64,rel64}`, so an FDO provider-ABI break invalidates every provider and both products
+  must be rebuilt and released together.
+
+An explicit instruction in the task overrides the line for that task only; say which one you followed.
 
 ## Code style
 
@@ -316,6 +406,15 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
   `.\Run-FdoTests.ps1 -Test <suite>` — or, while iterating, a single fixture with
   `-Fixture <registry>` — in the matching configuration. Report the suite's result
   (`OK (n)`) rather than just "it built".
+- **Release vs Debug** — a Debug pass does not validate the Release build, and here it is weaker
+  still: Debug and Release also differ in CRT flavour and `_ITERATOR_DEBUG_LEVEL`, so the two are
+  different runtimes, not the same runtime at different speed. Optimisation also removes the NULL-`this`
+  guards a Debug build keeps (see [CPP_STYLE.md](./CPP_STYLE.md#null-this-optimisation-and-release-builds)).
+  Because the two configurations cannot be built simultaneously here, treat the second one as a planned
+  pass rather than an afterthought.
+- **Shipped-header changes** — check the [current mode](#current-cycle) first, then
+  [FDO API/ABI compatibility](#fdo-apiabi-compatibility) for how to tell whether the shipped surface
+  actually moved.
 - **Memory-leak fixes** — state which rule above the defect broke, fix it, re-run the affected suite
   in Debug, and say what the leak probe showed before and after (a refcount, a `_CrtMemDifference`
   delta, or the record count). Add a row to [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) for
@@ -340,3 +439,8 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
   `fdo-connectioninfo-datastore.patch`).
 - The MapGuide installer requires WiX, and the InstantSetup bundle requires the .NET SDK; neither is
   needed to build or test the C++ trees.
+- The GDAL provider's Windows message project has never merged anything but the static RC template, so
+  its message table is empty and GDAL error text reaches clients only through the default strings
+  compiled into the `NlsMsgGet*` calls. Adding or parameterising a message in `GRFPMessage.mc`
+  (e.g. `GRFP_95_CANNOT_GET_IMAGE_INFO`, `GRFP_111`–`114`) therefore changes nothing in the Windows
+  catalogue until that project is wired up like the other providers'.

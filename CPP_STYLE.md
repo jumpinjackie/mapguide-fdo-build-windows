@@ -102,6 +102,32 @@ Cycle members are not fixable by releasing "harder" — every participant has a 
 Fixing one means changing what the class means by "owns", which is why the catalogued cycle cases in
 [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) are recorded rather than patched.
 
+### NULL `this`, optimisation and Release builds
+
+A member function must never be entered on a NULL object. That is undefined behaviour, and the
+optimiser is entitled to assume `this` is never NULL, so it may delete an `if (this)`-style guard and
+then dereference the pointer anyway. Code that survives a Debug build can therefore fault in a Release
+build. MSVC is no different from GCC in principle — it assumes `this` is non-null just as readily — but
+it is less predictable about *when* it elides the check, so a Debug pass here is not evidence of
+anything.
+
+Two idioms in the FDO sources depend on a NULL object being tolerated, and each has produced a
+Release-only crash in the sibling Linux build of this same code:
+
+- `FdoDataValue::Compare` cannot cope with a NULL operand — the `(!this)` test at its head is dead
+  code. A NULL *value* has to go through `FdoInternalDataValue::Compare`, which is the gateway that
+  tests for it.
+- `SmartCast<T>(true)` is documented as usable on a NULL object, because `dynamic_cast(NULL)` is NULL
+  and `FDO_SAFE_RELEASE(NULL)` is a no-op. Once `this` *is* the object pointer, though, the NULL guard
+  inside `FDO_SAFE_RELEASE` is dead code, and that is the guard that gets removed. Anything that may be
+  NULL — the result of a `FindItem()` that can fail, for example — must be cast through
+  `FdoSmDisposable::SafeSmartCast<T>( pObject, true )` rather than `pObject->SmartCast<T>( true )`.
+  That is exactly the "Returns NULL if this cannot be cast to type T" contract `SmartCast` already
+  documents.
+
+Carrying these fixes into the FDO trees here (`fdo-dbg` and `fdo-rel`) is covered by the "Source trees"
+rules in [AGENTS.md](./AGENTS.md).
+
 ### FDO
 
 - Wrap FDO interface pointers in `FdoPtr<T>` (defined in `Fdo\Unmanaged\Inc\Common\Ptr.h`),
