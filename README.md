@@ -64,6 +64,134 @@ Drop the required files under `fdo_rdbms_thirdparty` as follows:
 
 Debug and Release builds of MapGuide cannot be made simultaneously. If you need both Debug and Release builds, you need to do it one at a time.
 
+## SQL Server Spatial performance levers (`FDO_SQS_PERF`)
+
+Two behaviours of the SQL Server Spatial provider and its ODBC driver are shaped by the way the FDO
+test suite exercises them: the physical-schema catalog query (`sys.objects`, the "database object"
+query) is re-executed for every catalog lookup, and `SQLDescribeParam()` is called for every bound
+parameter, which costs a server round trip each. Together they are the largest source of the SQL
+Server traffic in the `SqlServerSpatial` FDO unit-test suite and a large part of why that suite is
+several times slower than the equivalent MySQL/PostGIS suites — see
+[HANDOFF-SqlServerSpatial-Performance.md](./HANDOFF-SqlServerSpatial-Performance.md). Both can be
+avoided, and both are opt-in behind one flag:
+
+```powershell
+$env:FDO_SQS_PERF="1"           # remember catalog lookups and parameter types
+.\Run-FdoTests.ps1 -Test SqlServerSpatial -Timing -RoundTrips
+
+Remove-Item Env:FDO_SQS_PERF    # (or set it to 0) use the original behaviour
+```
+
+`FDO_SQS_PERF` is read by the SQL Server Spatial schema manager (the provider) and by the SQL
+Server Spatial ODBC driver. `1` enables both behaviours; any other value, including unset, keeps
+the original behaviour exactly — each one is a single test of the flag in front of the original
+code, so the un-flagged path is the code that was there before.
+
+**Catalog lookups.** A named catalog lookup (a single object, or a candidate batch) that the cache
+cannot already answer runs the same query the un-cached path would have run, and remembers what it
+found. Objects that are not found are not remembered, so a repeat lookup of a missing object
+queries again, just as it did before — the cache can never hide a database object that exists. It
+is dropped when schema changes are committed. Un-qualified (bulk) catalog reads are not cached, so
+the physical schema bulk load always reads the database.
+
+**Parameter types.** `SQLDescribeParam()` is asked once per parameter of a statement text instead
+of once per bind, and every later bind of that statement reuses the answer, so the arguments handed
+to `SQLBindParameter()` are exactly the ones the original path builds. The answers are keyed by
+statement text and connection, and are dropped when the context is torn down, when a connection
+goes away, and when a statement that can change what a parameter resolves to (DDL, `USE`, ...) is
+prepared.
+
+Together they take the `FdoSelectTest` fixture from ~45 s to ~20 s and the full suite from
+~24 min to ~9m30s, both `OK` (see the handoff's §11 and §13 for the measurements).
+
+Both paths are also leak-checked: with `FDO_CRT_LEAK_CHECK=1` the fixture leaks the same 7 blocks
+(~8 KB) of pre-existing global state with the flag on as with it off, against ~5.5 MB leaked before
+the schema-manager catalog reader's field lookups were made ownership-correct (see the handoff's
+§16, which also records the full suite at 8m 12.0 s after that fix).
+
+The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a
+patch at [fdo-sqs-perf.patch](./fdo-sqs-perf.patch) (apply with `svn patch` from `fdo-dbg`).
+
+## Test data stores are named after the Windows account (`fdo_<account>`)
+
+The database-backed FDO suites (MySQL, PostGIS, SQL Server Spatial) get the name of the data store
+they use — for PostGIS and MySQL a real database — from the `datastore` key of their
+`*Init.txt`. None of the `*Init.txt` files in this repo set that key, and the suites then derive it:
+
+```
+datastore = "fdo_" + <Windows account name, lower-cased>      # ConnectionUtil::GetEnviron()
+```
+
+So on this machine (account `user`) the PostGIS suite works in the database `fdo_user`, and its
+sub-suites in `fdo_user_<suffix>` (`fdo_user_schema_mgr`, `fdo_user_emptygeom`,
+`fdo_user_apply_schema`, ...) — the same 40-odd names you can see in `sys.databases` on the SQL
+Server test host. The data store is **created on demand**: `UnitTestUtil::GetConnection(suffix,
+bCreate=true)` creates it through the provider's `CreateDataStore` when `DatastoreExists()` says it
+is not there, and nothing drops the base data store at the end of a run.
+
+The consequence to be aware of: on a **fresh database server** (a recreated container/volume), or
+under a **different Windows account**, the first suite run has nothing to connect to yet.
+`FdoConnectionInfoTest::TestProviderInfo` runs first and is the one test that opened a connection
+naming the data store without creating it, so it failed with
+`FATAL: database "fdo_user" does not exist`, the run created the data store one test later, and
+every run after that was green — which made it look like a flaky test. It now creates the data
+store first, so the first run is green too (PostGIS, MySQL and SQL Server Spatial: their
+`TestProviderInfo` are the same code).
+
+Those three test files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
+[fdo-connectioninfo-datastore.patch](./fdo-connectioninfo-datastore.patch).
+
+## Leak checking an FDO suite from the command line (`FDO_CRT_LEAK_CHECK`)
+
+The Debug suites link the debug CRT, and the cppunit test host that the GenericRdbms suites use
+(`Thirdparty\cppunit\HostApp\TestMain.cpp` — the `main` of `UnitTestSQLServerSpatial.exe`,
+`UnitTestPostGIS.exe`, `UnitTestMySQL.exe` and the ODBC ones) already turns the CRT's leak check on
+with `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)`. By default that report is
+written to the *debugger's* output, which a plain command-line run discards. Set
+`FDO_CRT_LEAK_CHECK=1` to send it to stderr instead, so it appears in the console output and in the
+log the runner tees:
+
+```powershell
+$env:FDO_CRT_LEAK_CHECK="1"
+.\Run-FdoTests.ps1 -Test SqlServerSpatial -Fixture FdoSelectTest     # ~20 s; report is at the end
+Select-String -Path testlogs\Dbg64_UnitTestSQLServerSpatial.txt -Pattern 'Detected memory leaks' -Context 0,300
+```
+
+The report lists every block still allocated when the process exits, as
+`{block} normal block at 0x0000000000000000, N bytes long`. Two things to know when reading it:
+
+* **Compare against the unchanged tree.** Deliberately-live global and singleton state is always in
+  the dump; the Debug `SqlServerSpatial` suite has 7 such blocks (~8 KB) with default provider
+  behaviour, and that is the baseline rather than a defect. Judge by the difference, and by the
+  *set* of record sizes, not by the total.
+* **The provider's blocks carry no file/line** (only the host's own translation unit has
+  `_CRTDBG_MAP_ALLOC`), so identify them by size and arithmetic — e.g. `sizeof(odbcdr_context_def)`
+  is 3600, `sizeof(odbcdr_stmt_desc)` is 48 and `sizeof(odbcdr_param_desc_map)` is 40. Block numbers
+  can be followed under a debugger with `_CrtSetBreakAlloc(<block>)`; without one, the
+  reference-count instrumentation in [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) is what
+  names the *holder* of a leaked object.
+* **To get a provider file named**, add the mapping to the suspect translation unit for the
+  diagnosing run:
+  ```cpp
+  #ifdef _DEBUG
+  #define _CRTDBG_MAP_ALLOC
+  #include <crtdbg.h>
+  #define new new( _NORMAL_BLOCK, __FILE__, __LINE__ )   // note: breaks placement new
+  #endif
+  ```
+  With it in place the dump names the allocation site (`DbObjectReader.cpp(519) : {1500178} normal
+  block ...`). An allocation hook in the *test host* cannot do this: it fires for the host's own
+  debug-allocator calls, and the provider DLL's TUs allocate through the plain allocator even though
+  both use the shared `/MDd` heap (which is why the dump still lists the provider's blocks).
+
+MSVC has no LeakSanitizer — `/fsanitize=address` exists but `/fsanitize=leak` does not — so there
+is no ASan-style leak report on Windows. The CRT debug heap, Application Verifier, Dr. Memory and
+Visual Studio's memory tooling are the options, and the first of those works fine from a
+command-line run.
+
+The test-host change lives in the gitignored FDO SVN tree, so it is also kept as a patch at
+[fdo-crt-leak-check.patch](./fdo-crt-leak-check.patch).
+
 ## Steps (tldr, powershell)
 
 ```powershell

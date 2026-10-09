@@ -78,9 +78,24 @@
     The KingOracle suite runs KgOraUnitTest.exe. That executable needs the
     Oracle client libraries (oci.dll and friends) either copied next to it or
     on PATH, and a reachable Oracle instance. It defaults to a local Oracle XE
-    instance (//localhost:1521/xe); to use a different one, set the
-    KG_DEFAULT_ORA_CONNECTION, KG_ORA_USERNAME, KG_ORA_PASSWORD and
-    KG_ORA_SERVICE environment variables before invoking this script.
+    instance (//localhost:1521/xe).
+
+    Pointing it at a different instance needs both variables below: the
+    executable has two independent connection paths that read different
+    variables, so setting only one leaves the other path on the //localhost
+    default, failing with ORA-12541.
+
+    - KG_DEFAULT_ORA_CONNECTION - the whole connection string, e.g.
+      'Username=fdounittest;Password=fdounittest;Service=//fdodb:1521/xe;
+      OracleSchema=fdounittest'. This is what CreateDefaultConnection()
+      reads, so it covers most of the suite (ConnectionTests, DataTypeTests,
+      SelectTests, FilterProcessorTests, InsertUpdateDeleteTests). The
+      compiled-in default masks the password, so supply your own Password key.
+
+    - KG_ORA_SERVICE - the Service/DbLink alone, e.g. '//fdodb:1521/xe', as
+      read by GetService(). It covers the OCI tests (OCITests), SchemaTests
+      and the raw-OCI setup in GeometryTests; KG_ORA_USERNAME and
+      KG_ORA_PASSWORD override the fdounittest defaults on that path.
 #>
 [CmdletBinding()]
 param(

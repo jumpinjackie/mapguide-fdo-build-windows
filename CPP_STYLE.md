@@ -61,6 +61,16 @@ The same applies to dereferencing any AddRef'ing getter inline
 load it into an `FdoPtr` first, or release it explicitly. A **chain** of them
 (`schemas->GetItem(0)->GetClasses()->GetItem(name)`) drops one reference per link.
 
+This includes the *internal* schema-manager collections — `FdoSmCollection::GetItem()`,
+`FdoSmNamedCollection::GetItem()` and the `Sm/Ph` row/field collections all end in
+`FDO_SAFE_ADDREF(m_list[index])`, so `ROW->GetFields()`, `fields->GetItem(L"name")` and
+`rows->GetItem(0)` each hand back a reference the caller owns just like the public FDO collections do.
+In a per-row or per-lookup path that is one leaked reference per row per getter: ten
+`fields->GetItem(name)->SetFieldValue(...)` calls in a reader's `ReadNext()` leaked 48,844 blocks /
+5.5 MB in one 24-test fixture. Prefer the owning class's own helpers — `FdoSmPhReadWrite::SetString()`,
+`GetString()`, `GetField()` look the field up, hold it in an `FdoSmPhFieldP` and release it —
+otherwise hold each result in a `Ptr` local.
+
 `FdoPtr<>` is vetted **only** as a local variable or as a class member — never as an STL container
 element or a function parameter, and do not introduce new code that returns one by value. Where
 existing code already returns an `Fdo<X>P`, take the result into an `FdoPtr` local (or a member) and

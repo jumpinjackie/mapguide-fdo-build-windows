@@ -174,7 +174,15 @@ destructors, so a leaked reference is *never* reclaimed by anything else. The fu
   `FdoPtr<FdoX> x = FdoX::Create(...); coll->Add(x);`
 - Never dereference a counted getter inline (`coll->GetItem(i)->GetName()`,
   `obj->SmartCast<T>()->Foo()`), and never chain them — `schemas->GetItem(0)->GetClasses()->GetItem(n)`
-  drops one reference per link.
+  drops one reference per link. The chained form reads like ordinary member access, which is why it
+  keeps coming back: `FdoCollection::GetItem()`, `FdoNamedCollection::GetItem()` and the schema
+  manager's own `FdoSmCollection::GetItem()` all end in `FDO_SAFE_ADDREF(m_list[index])`, so the
+  reference is the caller's no matter how the collection is owned. In a per-row or per-lookup path the
+  leak is multiplied by the workload — ten `fields->GetItem(name)->SetFieldValue(...)` calls in a
+  reader's `ReadNext()` leaked 48,844 blocks / 5.5 MB in one 24-test fixture
+  ([docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md)). Hold each result in a `Ptr` local, or use
+  the owning class's own helper (`FdoSmPhReadWrite::SetString()` is the schema manager's
+  look-up-and-release version).
 - Child-to-parent and helper-to-owner back-pointers must be **raw**. A counted reference in the
   direction that points *back* at the owner is a cycle, and the owner's destructor can never run to
   break it.
@@ -207,6 +215,20 @@ A Debug build is required for all of these; a Release run will not report anythi
    global and singleton state appears in that dump, so compare against a run of the *unmodified* tree
    and only chase the difference. `_CrtMemCheckpoint` / `_CrtMemDifference` around a single test
    pinpoints what that test allocates and keeps, which is the precise version of the same idea.
+
+   The GenericRdbms suites (`UnitTestSQLServerSpatial.exe`, `UnitTestPostGIS.exe`, `UnitTestMySQL.exe`,
+   the ODBC ones) get their `main` from the cppunit test host
+   `Thirdparty\cppunit\HostApp\TestMain.cpp`, which already sets that flag — but the CRT writes the
+   report to the *debugger's* output, so a plain command-line run shows nothing. With
+   `FDO_CRT_LEAK_CHECK=1` in the environment it is written to stderr instead and therefore lands in
+   the run's console output and in `testlogs\<Log>`; the report gives block counts and sizes rather
+   than file/line for code inside the provider DLLs, so identify those by size
+   (`sizeof(<type>)`) and use the refcount instrumentation below when you need to know *who* holds
+   the object. `_CRTDBG_MAP_ALLOC` names a file and line only for translation units that define it,
+   and an allocation hook installed in the test host fires for that module's debug-allocator calls
+   and not the provider's — adding the mapping to the suspect provider TU is what gets that TU
+   named. MSVC has no LeakSanitizer, so there is no ASan-style alternative on Windows. See
+   [README.md](./README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check).
 3. **Visual Studio's Memory Usage tool** (Debug, native heap snapshots) or **Application Verifier**
    (Basics → Leak) for a second, independent view; **Dr. Memory** (`drmemory -- <exe>`) works for
    runs that cannot use the debug heap.
@@ -310,5 +332,11 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
 - The ODBC sub-suites need their `*Init.txt` files to be correct for the machine, and the Oracle,
   MySQL and PostGIS suites need `fdo_rdbms_thirdparty` populated and the matching environment
   variables set.
+- No `*Init.txt` here sets `datastore`, so the database-backed suites derive their data store name
+  as `fdo_<Windows account>` (`fdo_user` on this machine) and create it on demand. A different
+  account, or a recreated database container, therefore starts from an empty data store; the suite
+  copes because the connection-info test creates it first (see
+  [README.md](./README.md#test-data-stores-are-named-after-the-windows-account-fdo_account) and
+  `fdo-connectioninfo-datastore.patch`).
 - The MapGuide installer requires WiX, and the InstantSetup bundle requires the .NET SDK; neither is
   needed to build or test the C++ trees.

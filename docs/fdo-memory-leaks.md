@@ -37,6 +37,13 @@ They are listed in rough order of how often they were the answer.
 - **A chained getter in test code.** `coll->GetItem(i)->GetFoo()`, `schemas->GetItem(0)->GetClasses()`,
   `GetClasses()->GetItem(name)`. Each link returns an AddRef'd pointer and each link leaks one
   reference. 25 of the 34 `GetItem(...)->` occurrences in the FDO Core test code were real leaks.
+  It is not only test code: the same shape in a *per-row* path of a provider — ten
+  `fields->GetItem(name)->SetFieldValue(...)` calls in a reader's `ReadNext()` — cost 48,844 blocks
+  and 5.5 MB in one 24-test fixture, because the leak is multiplied by every row served (see the
+  `FdoSmPhRdSqsDbObjectCacheReader` row below). `FdoCollection::GetItem()`,
+  `FdoNamedCollection::GetItem()` and the schema manager's `FdoSmCollection::GetItem()` all end in
+  `FDO_SAFE_ADDREF(m_list[index])` (`Fdo/Unmanaged/Inc/Common/Collection.h`), so "the collection owns
+  it" is never the reason the reference is safe to drop.
 - **A `Create()` whose reference nobody owns.** `coll->Add(FdoPropertyValue::Create(...))` is the
   archetype: `Add()` AddRefs, so the collection owns its own reference and the one `Create()` handed
   back is lost (40 B per call). Also seen as `AddError(FdoSchemaException::Create(...))` in the schema
@@ -111,6 +118,17 @@ questions the classification encodes: *is anything still pointing at it?* (if no
 lost reference — fix the allocation site) and *is the only thing pointing at it another leaked
 object?* (if so, find the root of that group first; the rest usually collapses).
 
+On Windows the tool of the day is the CRT debug heap, whose records carry a size and a block number
+and nothing else: compare the *sizes* against the types in play (`sizeof(<type>)`, and the leaked
+count against how many times the code that allocates them ran), and read the block's `Data:` bytes
+for a string that identifies it. `_CRTDBG_MAP_ALLOC` only gives the file and line for translation
+units that define it — the test host does, the provider DLLs do not — so a provider record is
+attributed by size/type unless the mapping is added to the suspect TU (or to the project's forced
+include) for a diagnosing run. Adding an allocation hook to the test host is not a way round this:
+the hook fires for the allocations made through that module's *debug* allocator, so it sees the
+host's allocations and not the provider's. [README.md](../README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check)
+has the command-line recipe, including how to turn the report on for a run.
+
 The method that worked, repeatedly:
 
 1. **Count before you touch anything** — records, and how many are direct. Run the suite yourself so
@@ -176,6 +194,7 @@ new code. Paths are relative to the FDO source root.
 | FDO Core | `FdoXmlGeometryHandler::EndHandleGML3MultiGeometry` | The geometry was popped off a raw stack without releasing the reference `Create()` had returned (the destructor, the only other pop, does release). |
 | FDO Core | `FdoSchemaXmlContext::RefClass2SchemaName` / `CheckWriteAssoc` | `AddError()` AddRefs its argument but does not take ownership; these were the last 2 of the 149 `AddError(Create(...))` sites not wrapped in an `FdoSchemaExceptionP`. |
 | FDO Core | Chained getters on AddRef'ing collections in test code | `coll->GetItem(i)->GetFoo()` leaks the reference `GetItem()` returns; rewritten as `FdoStringElementP(coll->GetItem(i))->GetString()`. |
+| SqlServerSpatial | `FdoSmPhRdSqsDbObjectCacheReader::ReadNext` chained `GetItem()`s in its per-row path | `FdoSmPhFieldsP fields = GetRows()->GetItem(0)->GetFields();` plus ten `fields->GetItem(name)->SetFieldValue(...)` calls dropped the reference each `GetItem()` returns, once per row served: 48,844 blocks / 5.5 MB in the 24-test `FdoSelectTest` fixture (against 7 blocks / 8 KB with the cache disabled). The row and fields are `Ptr` locals and the fields are set through `FdoSmPhReadWrite::SetString()`, which is the schema manager's own look-up-and-release helper. Found with the CRT debug heap, by matching the leaked blocks' sizes to the types (`FdoSmPhField`, and the row) and to the number of readers; see [README.md](../README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check). |
 | FDO Core | `Create()` references never released in test code | Objects created in tests (`FilterParseTest`, `FilterTest`, `SchemaTest`) were used and dropped. |
 | GDAL | `FdoRfpConnection::SetConfiguration` nested a parse failure as a cause without releasing the caught exception | The 3 `ReadXml` catch blocks now hold the caught exception in an `FdoPtr<FdoException>` before wrapping it, so the incoming reference is released even though the new exception owns the cause. This was the entire GDAL leak. |
 | SDF | `SdfConnection::Open` nested a "not an SDF file" failure without releasing the caught exception | Same cause-ownership fix. |
