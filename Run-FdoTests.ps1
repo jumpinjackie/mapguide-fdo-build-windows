@@ -154,6 +154,35 @@ $TestTable = [ordered]@{
     'OdbcAccess' = @{
         Suite   = 'OdbcAccessTests'
         InitFile = 'OdbcInit.txt'
+        # The Microsoft Access (ACE) ODBC driver stops accepting new connections
+        # part-way through a long-lived process: from roughly the 60th test
+        # onwards, connects start failing with Jet -1036 "Too many client tasks",
+        # even though every connection the provider opened was closed again and
+        # nothing leaks (see the README's ODBC Access note). The whole suite
+        # therefore runs as one process per fixture. Missing from this list is
+        # the suite's MessageTest, which is registered under OdbcAccessMessageTest
+        # for the purpose.
+        Fixtures = @(
+            'OdbcAccessFdoInsertTest'
+            'OdbcAccessFdoMultiThreadTest'
+            'OdbcAccessFdoSchemaTest'
+            'OdbcAccessFdoSelectTest'
+            'OdbcAccessFdoSqlCmdTest'
+            'OdbcAccessFdoUpdateTest'
+            'OdbcAccessDescribeSchemaTest'
+            'OdbcAccessFdoAdvancedSelectTest'
+            'OdbcAccessFdoConnectionInfoTest'
+            'OdbcAccessFdoConnectTest'
+            'OdbcAccessFdoDeleteTest'
+            'OdbcAccessMessageTest'
+        )
+        # The tests run against a prefabricated .mdb, but the Delete fixture
+        # removes EMPLOYEES rows without putting them back, so a second run
+        # against the same file fails the row-count assertions in
+        # FdoAdvancedSelectTest. Restore the datastore from the pristine copies
+        # kept in the tree (next to this table's WorkDir, i.e. the exe's parent
+        # directory) before every Access run.
+        TestData = @('MSTest.mdb', 'Lidar.mdb')
         Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Access.txt' }
         Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Access.txt' }
     }
@@ -562,10 +591,12 @@ function Resolve-TestNames {
 $CppUnitSuccessRegex = 'OK \((?<n>\d+)(?: tests?)?\)'
 $CppUnitFailureRegex = '(?m)^\s*(?:!!!FAILURES!!!|Failures !!!)\s*$|(?m)^\s*Run:\s*\d+\s+.*?(?:Failure total|Failures|Errors):\s*[1-9]'
 
-function Invoke-TestSuite {
+function Invoke-SuiteChunk {
     param(
         [string] $Name,
-        [string[]] $Fixture
+        [string[]] $Fixture,
+        [string] $Header,
+        [switch] $Append
     )
     $parts = Get-CommandParts -Name $Name -Fixture $Fixture
 
@@ -579,7 +610,7 @@ function Invoke-TestSuite {
     }
 
     Write-Host ''
-    Write-Host "=== $Name [$Configuration] ===" -ForegroundColor Cyan
+    if ($Header) { Write-Host $Header -ForegroundColor Cyan } else { Write-Host "=== $Name [$Configuration] ===" -ForegroundColor Cyan }
     Write-Host "  WorkDir : $($parts.WorkDir)"
     Write-Host "  Command : $($parts.Exe) $($parts.Args -join ' ')"
     Write-Host "  Log     : $($parts.Log)"
@@ -627,6 +658,17 @@ function Invoke-TestSuite {
 
     Push-Location -LiteralPath $parts.WorkDir
     try {
+        $teeArgs = @{ FilePath = $parts.Log }
+        if ($Append) {
+            $teeArgs['Append'] = $true
+        }
+        else {
+            # A chunked suite's first chunk replaces the log; without this the
+            # previous run's output (including any failures) would still be in
+            # the file the failure scan reads.
+            Remove-Item -LiteralPath $parts.Log -Force -ErrorAction SilentlyContinue
+        }
+
         if ($null -ne $testTiming) {
             & $parts.Exe @($parts.Args) 2>&1 | ForEach-Object {
                 $text = [string] $_
@@ -643,10 +685,10 @@ function Invoke-TestSuite {
                     $pending.Measured = $pending.Measured + [double] $Matches['sec']
                 }
                 $_
-            } | Tee-Object -FilePath $parts.Log | Out-Host
+            } | Tee-Object @teeArgs | Out-Host
         }
         else {
-            & $parts.Exe @($parts.Args) 2>&1 | Tee-Object -FilePath $parts.Log | Out-Host
+            & $parts.Exe @($parts.Args) 2>&1 | Tee-Object @teeArgs | Out-Host
         }
         $code = $LASTEXITCODE
     }
@@ -719,12 +761,100 @@ function Invoke-TestSuite {
     return [pscustomobject]@{ Name = $Name; ExitCode = $code; Skipped = $false; Duration = $duration; ZeroTests = $zeroTests; LogFailures = $logFailures }
 }
 
+# Restores a suite's prefabricated test data from the pristine copies in the
+# source tree, so that each run starts from the state the tests expect. Only
+# suites that declare TestData are affected.
+function Restore-SuiteTestData {
+    param(
+        [string] $Name
+    )
+
+    $def = $TestTable[$Name]
+    if (-not ($def -and $def.TestData)) { return }
+
+    $parts = Get-CommandParts -Name $Name
+    $dataDir = Split-Path -Parent $parts.Exe
+    foreach ($file in $def.TestData) {
+        $source = Join-Path $parts.WorkDir $file
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+
+        $target = Join-Path $dataDir $file
+        Copy-Item -LiteralPath $source -Destination $target -Force
+
+        # A leftover ACE lock file belongs to a database that was not shut down
+        # cleanly; the driver recreates it on demand.
+        $lock = [System.IO.Path]::ChangeExtension($target, '.ldb')
+        Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+
+        Write-Host "  TestData: restored $file in $dataDir" -ForegroundColor DarkGray
+    }
+}
+
+# Runs a suite. A suite that declares a Fixtures list (the ODBC Access suite does,
+# because of the ACE driver's per-process connection limit) is run as one process
+# per fixture, with every chunk's output appended to the suite's single log file.
+function Invoke-TestSuite {
+    param(
+        [string] $Name,
+        [string[]] $Fixture
+    )
+
+    $def = $TestTable[$Name]
+    if ($Fixture -or -not ($def -and $def.Fixtures)) {
+        Restore-SuiteTestData -Name $Name
+        return Invoke-SuiteChunk -Name $Name -Fixture $Fixture
+    }
+
+    $chunks = @($def.Fixtures)
+    Write-Host ''
+    Write-Host "=== $Name [$Configuration] - $($chunks.Count) fixtures, one process each ===" -ForegroundColor Cyan
+    Restore-SuiteTestData -Name $Name
+
+    $results = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $chunks.Count; $i++) {
+        $chunk = [string] $chunks[$i]
+        $chunkArgs = @{
+            Name    = $Name
+            Fixture = @($chunk)
+            Header  = "  --- [$($i + 1)/$($chunks.Count)] $chunk"
+        }
+        if ($i -gt 0) { $chunkArgs['Append'] = $true }
+        $results.Add((Invoke-SuiteChunk @chunkArgs))
+    }
+
+    $duration = [TimeSpan]::Zero
+    $code = 0
+    $skippedCount = 0
+    $zeroTests = $false
+    $logFailures = $false
+    foreach ($r in $results) {
+        if ($null -ne $r.Duration) { $duration = $duration + $r.Duration }
+        if ($r.Skipped) { $skippedCount++ }
+        if (($null -ne $r.ExitCode) -and ($r.ExitCode -ne 0)) { $code = $r.ExitCode }
+        if ($r.ZeroTests) { $zeroTests = $true }
+        if ($r.LogFailures) { $logFailures = $true }
+    }
+
+    return [pscustomobject]@{
+        Name        = $Name
+        ExitCode    = $code
+        Skipped     = ($results.Count -gt 0) -and ($skippedCount -eq $results.Count)
+        Duration    = $duration
+        ZeroTests   = $zeroTests
+        LogFailures = $logFailures
+    }
+}
+
 # --- Entry point -----------------------------------------------------------
 if ($List) {
     Write-Host "Available FDO test suites (Configuration: $Configuration)" -ForegroundColor Cyan
     foreach ($key in $TestTable.Keys) {
         $parts = Get-CommandParts -Name ([string] $key)
         Write-Host ("  {0,-18} {1} {2}" -f $key, $parts.Exe, ($parts.Args -join ' '))
+        $def = $TestTable[$key]
+        if ($def -and $def.Fixtures) {
+            Write-Host ("  {0,-18} runs as {1} fixtures, one process each" -f '', @($def.Fixtures).Count) -ForegroundColor DarkGray
+        }
     }
     Write-Host ''
     Write-Host "Pseudo-names: All (every suite), Odbc (all ODBC sub-suites)."

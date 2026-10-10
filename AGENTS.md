@@ -431,6 +431,17 @@ An explicit instruction in the task overrides the line for that task only; say w
 - The ODBC sub-suites need their `*Init.txt` files to be correct for the machine, and the Oracle,
   MySQL and PostGIS suites need `fdo_rdbms_thirdparty` populated and the matching environment
   variables set.
+- The Microsoft Access (ACE) ODBC driver stops accepting connections part-way through a long-lived
+  process (Jet error -1036, "Too many client tasks"). The budget belongs to the ACE engine, so the
+  ACE Excel, dBASE and Text drivers share it, and what spends it is connections that overlap — one
+  at a time is unlimited. The Access suite is therefore run as one process per fixture, and its
+  prefabricated datastore is restored from the pristine copies in the tree before every run — the
+  Access Delete fixture removes `EMPLOYEES` rows without putting them back. Both
+  behaviours live in the `OdbcAccess` entry of `Run-FdoTests.ps1`, and
+  [README.md](./README.md#the-odbc-access-suite-runs-one-fixture-per-process-odbcaccess) has the
+  measurements. The FDO-tree part (the registry name `MessageTest` needs to be a chunk on its own,
+  and the same note added to the tree's `OpenSourceBuild__README.txt`) is kept as
+  `fdo-odbc-access-suite.patch`.
 - No `*Init.txt` here sets `datastore`, so the database-backed suites derive their data store name
   as `fdo_<Windows account>` (`fdo_user` on this machine) and create it on demand. A different
   account, or a recreated database container, therefore starts from an empty data store; the suite

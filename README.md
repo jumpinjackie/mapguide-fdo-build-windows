@@ -141,6 +141,74 @@ store first, so the first run is green too (PostGIS, MySQL and SQL Server Spatia
 Those three test files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
 [fdo-connectioninfo-datastore.patch](./fdo-connectioninfo-datastore.patch).
 
+## The ODBC Access suite runs one fixture per process (`OdbcAccess`)
+
+The Access suite is the one suite that could not be run as a whole. From roughly its 63rd test
+onwards, the tests that open a **second** connection while the fixture's own connection is open
+(`FdoUpdateTest.updateCities`/`updateTable1`, `FdoConnectTest.OpenTest`/`ConfigFileTest`/
+`ConnectWithParmTest`, and the `FdoDeleteTest` fixture's `setUp`) failed with
+
+```
+Message: [Microsoft][ODBC Microsoft Access Driver] Too many client tasks.
+Message: [Microsoft][ODBC Driver Manager] Driver's SQLSetConnectAttr failed
+```
+
+`Too many client tasks` is Jet error **-1036**, and it is the *ACE driver* refusing the connection,
+not the provider failing to release one:
+
+- Reproduced with the raw ODBC API against a copy of the same `.mdb`, no FDO code involved: a
+  process can have 24 connections open at once; after closing that batch only 12 can be opened, then
+  6, then 3 — so closed connections are not all released by the driver. One at a time it is
+  unlimited (400 sequential connects, each closed before the next, all succeed), so this is not a
+  simple connection counter.
+- Instrumenting the ODBC protocol driver (`ODBCDriver\connect.c`/`disconnect.c`) showed the provider
+  makes ~170 connects for a suite run, matches every one with a disconnect, never calls
+  `SQLDisconnect` in vain (`DISCONNECT-SKIPPED` never fired) and never holds more than 10
+  connections at once (that peak is `FdoMultiThreadTest`'s ten threads). With
+  `FDO_CRT_LEAK_CHECK=1` the suite reports no CRT leak records either — there is nothing to plug.
+- It depends on how many connections the *process* has already made, which is why the failures look
+  like interference from the other suites: any single fixture passes on its own, 62 tests in one
+  process pass, 63+ fail.
+
+So the suite is run as one process per fixture: the `OdbcAccess` entry of `Run-FdoTests.ps1` carries
+a `Fixtures` list, and the runner runs each of them in turn, appending to the suite's single log
+(120 tests across 12 processes, about 6 seconds). `MessageTest` is registered under
+`OdbcAccessMessageTest` for that purpose, so a run against a test build from before that
+registration reports the last chunk as `FAILED (no tests matched the fixture)`.
+
+Two further notes:
+
+- The tests run against a prefabricated database — the DSN the suite creates points at
+  `<exe dir>\MSTest.mdb` (`...\UnitTest\Dbg64\MSTest.mdb` for Debug, `...\Rel64` for Release). The
+  Access `FdoDeleteTest::FeatureDelete` deletes `EMPLOYEES` rows matching `JOBTITLE = 'Box Filler'`
+  and, unlike the fixture it overrides, does not put them back, so a second run against the same
+  file fails `FdoAdvancedSelectTest`'s row counts (`Expected my count to be 7, got 5`,
+  `Expected a different average salary`). The runner therefore restores `MSTest.mdb` and
+  `Lidar.mdb` from the pristine copies kept beside the suite's working directory (the versioned
+  ones in the FDO tree) before every Access run, and removes any leftover `.ldb`.
+- The budget belongs to the ACE **engine** in the process, not to the Access file. All four
+  ACE-backed code paths are the same `ACEODBC.DLL`, and refilling and draining a pool of five
+  connections refuses the 34th creation with the same Jet -1036 `Too many client tasks` on the
+  Access, Excel, dBASE **and** Text drivers - only the driver name in the message differs. What
+  spends the budget is connections that *overlap*; strictly one at a time it is unlimited (3000
+  connect/query/disconnect cycles, no refusal). It is not the ten-thread fixture that makes the
+  Access suite hit this: run it with `FdoMultiThreadTest` excluded (117 tests in one process) and it
+  still fails, in the same seven tests - the fixture is only the largest single charge (ten
+  connections at once, three times), so it makes the failure arrive sooner. The suite's own lighter
+  overlap is enough at this size: the tests that hold a second connection while the fixture's is
+  open (`updateCities`, `updateTable1`, the connect fixture's own opens, and the delete fixture's
+  `setUp`) spread over ~115 connections. `OdbcExcel` (51 tests), `OdbcDbase` (31) and `OdbcText` (6)
+  are green because their connections effectively never overlap, not because they are safe - the
+  ceiling is one overlapping connection away for them, and for any ACE-backed data store.
+- The ACE driver is the only 64-bit Access ODBC driver (the legacy Jet 4 driver,
+  `Microsoft Access Driver (*.mdb)`, is 32-bit only), so this is a driver limitation to work around
+  rather than something to fix in the provider.
+
+The FDO-tree part of this — giving `MessageTest` a registry name of its own (`OdbcAccessMessageTest`
+in `Providers\GenericRdbms\Src\UnitTest\Odbc\OdbcTestRegister.cpp`) and the note in the tree's own
+readme (`OpenSourceBuild__README.txt`, in its Windows ODBC unit-test section) — is also kept as a
+patch at [fdo-odbc-access-suite.patch](./fdo-odbc-access-suite.patch).
+
 ## Leak checking an FDO suite from the command line (`FDO_CRT_LEAK_CHECK`)
 
 The Debug suites link the debug CRT, and the cppunit test host that the GenericRdbms suites use
