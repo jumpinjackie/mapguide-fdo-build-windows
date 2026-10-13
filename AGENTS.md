@@ -72,13 +72,14 @@ Rules for working with the source trees:
   `mg-install\rel64` are built one at a time. The same applies to the two FDO trees.
 - Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
   repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
-- Fixes that land in the sibling repo's FDO working copies have to be mirrored here, because the two
-  repos build the same upstream branch and neither commits to SVN. The sibling exports its uncommitted
-  FDO diff as `patches/pending.patch`; from each FDO tree root (`fdo-dbg` **and** `fdo-rel`) run
-  `svn patch <path-to-pending.patch>`, after `svn update`-ing to at least the revision its
-  `(revision N)` headers name. Its currently-pending set is the NULL-`this` fixes in
-  `FdoInternalDataValue::Compare` / `FdoDataValue::Compare` and the nullable `SmartCast` call sites
-  (see [CPP_STYLE.md](./CPP_STYLE.md)) — delete this sentence once they are committed upstream.
+- A fix made in the sibling repo's FDO working copies reaches this repo by `svn update`, once it has been
+  committed upstream — the normal case, needing no patch. While a fix is still uncommitted there, mirror
+  it by reproducing the diff rather than by writing the same edit twice: in the sibling, `svn diff` from
+  its FDO tree root; here, from each FDO tree root (`fdo-dbg` **and** `fdo-rel`) run
+  `svn patch <path-to-diff>`, after `svn update`-ing to at least the revision its `(revision N)` headers
+  name. The sibling's `patches/pending.patch` is only the scratch file it pipes that `svn diff` into so
+  the change set can be read in an editor before it commits — it is not a published input, is not kept in
+  step with the working copy, and is deleted once committed, so never depend on it being there.
 
 ### Source of truth and history
 
@@ -92,6 +93,36 @@ Rules for working with the source trees:
 - For history, query the working copy with the read-only SVN commands instead of any mirror:
   `svn log [-l N] [-r REV] path`, `svn blame`, `svn diff -r A:B`, `svn cat -r REV path`, `svn info`.
   Never `svn commit` (see the commit rule above).
+
+### Commit messages: one scope per repository
+
+A single change set can span two version control systems with two independent histories — this git
+repository, and the SVN working copies inside it — so a commit message is written for one of them and
+must **not** mention files the other one owns:
+
+| The changed files are under | They are committed to | The message covers |
+|-----------------------------|-----------------------|--------------------|
+| `fdo-dbg/`, `fdo-rel/`, `MgDev/`, `Installer/`, `MgInstantSetup/` | the SVN working copy | only those paths |
+| anything else git tracks — `README.md`, `*.bat`, `Run-FdoTests.ps1`, `revnum.pl`, `*Init.txt`, `docs/**`, `AGENTS.md`, `CPP_STYLE.md` | this git repository | only those paths |
+
+- An **SVN** commit message describes **only** what `svn status` / `svn diff` report inside that one
+  working copy. Run `svn diff --summarize` from the working copy root before writing a word of the
+  message, and cover every path it lists. Do not add a section for a path that is not on that list — a
+  `Docs:` bullet for `docs/`, or a `Runner:` bullet for `Run-FdoTests.ps1`, is wrong even when those
+  files are part of the same piece of work.
+- The converse holds: a **git** commit message must not describe edits under the SVN trees above. Those
+  paths are gitignored, so git has no record of them and they are not part of any commit you can make
+  here — they are committed with `svn commit` once the user has reviewed the diff.
+- The sibling repo's `patches/pending.patch` is a copy of the very diff a message describes, not a path
+  in either change set, so it must never appear in one. See [Source trees](#source-trees) for what that
+  file is and is not.
+- The git-tracked files most often mistaken for source-tree content are `docs/fdo-memory-leaks.md`,
+  which records fixes made in the FDO trees, and `Run-FdoTests.ps1`, whose suite table is edited
+  alongside them. Both are committed to git, so neither belongs in an SVN commit message.
+- Verification evidence — the suites and configurations a change was tested with, and the before/after
+  test and leak totals — is a claim about the change rather than a file, and is always welcome in the
+  message. Take the subject and body conventions from that history's own recent messages (`svn log` for
+  the working copy), including how tickets are cited (`#<ticket>`, `Fixes #<ticket>`).
 
 ## Requirements
 
