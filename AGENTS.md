@@ -205,7 +205,9 @@ as environmental until proven otherwise.
 
 FDO and MapGuide both use intrusive reference counting with custom smart pointers, and both hide their
 destructors, so a leaked reference is *never* reclaimed by anything else. The full contract is in
-[CPP_STYLE.md](./CPP_STYLE.md); in short:
+[CPP_STYLE.md](./CPP_STYLE.md), and it binds every file under the two trees — **test code and test
+helpers included**: what a test leaks is exactly as permanent as what a provider leaks, and a suite
+that passes says nothing about either. In short:
 
 - `FdoPtr(T*)` **attaches** — it takes over the reference you hand it and does not AddRef. The copy
   constructor and copy-assignment *do* AddRef. So `FdoPtr<T> x = obj->GetX();` is correct (the getter's
@@ -228,6 +230,22 @@ destructors, so a leaked reference is *never* reclaimed by anything else. The fu
   ([docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md)). Hold each result in a `Ptr` local, or use
   the owning class's own helper (`FdoSmPhReadWrite::SetString()` is the schema manager's
   look-up-and-release version).
+- A counted getter whose result is the **target of a mutating call** is the same lost reference in a
+  write's clothing: `insert->GetPropertyValues()->Add(prop)`,
+  `update->GetPropertyValues()->Clear()`, `rows->GetItem(0)->SetFieldValue(...)`. The reference the
+  getter returned is the caller's whether the call through it reads or writes, so the collection and
+  everything it holds stay alive. Hold it first —
+  `FdoPtr<FdoPropertyValueCollection> values = insert->GetPropertyValues(); values->Add(prop);`.
+- An FDO `Set*` does not consume the reference you pass — it AddRefs or copies it — so a fresh object
+  handed straight in keeps the reference it was created with: `cmd->SetFilter(FdoFilter::Parse(text))`
+  (one parsed filter), `applySchema->SetFeatureSchema(MakeSchema())` (a whole schema graph),
+  `cmd->SetFeatureClassName(FdoIdentifier::Create(name))`. Name the argument:
+  `FdoPtr<FdoFilter> f = FdoFilter::Parse(text); cmd->SetFilter(f);`. The **string** overloads are
+  different in kind and always safe — `SetFilter(FdoString*)` and `SetFeatureClassName(FdoString*)`
+  parse inside the command, so the reference those parses create is the command's own and there is no
+  caller reference to lose. Which overload you call therefore decides who owns the object, and the
+  interface does not tell you: **read the implementation, and the provider's override of it, before
+  writing the call.**
 - Child-to-parent and helper-to-owner back-pointers must be **raw**. A counted reference in the
   direction that points *back* at the owner is a cycle, and the owner's destructor can never run to
   break it.
@@ -446,10 +464,24 @@ An explicit instruction in the task overrides the line for that task only; say w
 - **Shipped-header changes** — check the [current mode](#current-cycle) first, then
   [FDO API/ABI compatibility](#fdo-apiabi-compatibility) for how to tell whether the shipped surface
   actually moved.
+- **Test-code changes** — a new or edited test has to be leak-probed, because nothing else here would
+  notice: the suite passes either way, and a test that leaks poisons the suite for the next agent.
+  Run the affected fixture in Debug with `$env:FDO_CRT_LEAK_CHECK="1"` (recipe:
+  [README.md](./README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check)), then
+  run it again with your test removed — copy the file aside and `svn revert` it — and require the two
+  dumps to carry the same record signatures. The CRT prints nothing at all when nothing is still
+  alive, so a report that appears only in the first run *is* your test's leak, and a baseline of *no*
+  report is normal for a fixture that only reads. Compare like with like — fixture against fixture,
+  whole suite against whole suite — because a dump belongs to the process, not to the test, and match
+  record *sets* rather than totals: some fixtures (the SDF `MasterTest` one) leak pre-existing blocks.
+  Before building, re-read your own diff for the two shapes that keep causing this —
+  `X->GetColl()->Add(...)` and `SetX(Create|Parse(...))`. When you restore a reverted file by copy,
+  **touch it** (or check that the log's `OK (n tests)` count shows your test ran): the preserved mtime
+  can be older than the object file, and MSBuild then silently runs the baseline binary again.
 - **Memory-leak fixes** — state which rule above the defect broke, fix it, re-run the affected suite
   in Debug, and say what the leak probe showed before and after (a refcount, a `_CrtMemDifference`
   delta, or the record count). Add a row to [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) for
-  anything new.
+  anything new — including leaks you introduced and fixed in your own test code.
 - **Locking or ownership changes** — reproduce the failure first, and show the affected suite green
   afterwards. A lock or a back-pointer that only exists for one platform cannot be signed off by
   reading the diff.

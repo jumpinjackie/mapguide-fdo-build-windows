@@ -48,6 +48,25 @@ They are listed in rough order of how often they were the answer.
   archetype: `Add()` AddRefs, so the collection owns its own reference and the one `Create()` handed
   back is lost (40 B per call). Also seen as `AddError(FdoSchemaException::Create(...))` in the schema
   XML layer, where every call site had to be wrapped in an `FdoSchemaExceptionP(...)`.
+- **A counted getter used as the *target* of a mutating call** — the same sink-and-dropped-source as
+  the shape above, with a getter instead of a `Create()`. `insert->GetPropertyValues()->Add(prop)`
+  (`SltInsert::GetPropertyValues()` returns `FDO_SAFE_ADDREF(m_properties)`),
+  `update->GetPropertyValues()->Clear()`, `rows->GetItem(0)->SetFieldValue(...)`. The reference is the
+  caller's whether the call through it reads or writes, so the collection survives — and with it every
+  item and identifier string it holds. Three such calls in a new SQLite test retained the property
+  values, their `Name` identifiers and the inserted strings, which is what the dump's `aa`/`zz`/`Name`
+  blocks were.
+- **A creation or parse handed straight to a setter** — the same shape one argument further out. An
+  FDO `Set*` does not consume the reference you pass (it AddRefs or copies it), so
+  `cmd->SetFilter(FdoFilter::Parse(text))` loses one parsed filter per call (the three calls in a new
+  OGR test accounted for that fixture's whole 36-record report) and
+  `applySchema->SetFeatureSchema(UnitTestUtil::CreateSLTSchema(...))` loses everything the helper built
+  — the schema, its classes, property definitions and description strings. The string overloads are
+  different in kind — `SetFilter(FdoString*)` parses inside the command
+  (`m_filter = FdoFilter::Parse(value)`), so the reference it creates is the command's own — which is
+  why `SetFilter(L"...")` is safe and a parsed filter handed to the pointer overload is not. Both of
+  these shapes arrived *with tests written to cover a bug*: new test code is exactly as leak-prone as
+  provider code.
 - **A caught exception that is neither rethrown nor released** — including the empty `catch (...)`,
   which loses the only reference to an `FdoException*` and its message buffer. This is what the
   "expected exception" tests leak: they assert on the message of an exception the provider throws and
@@ -149,6 +168,14 @@ The method that worked, repeatedly:
    (`UnitTest.exe SelectTest`, `UnitTest.exe GmlTest`). A suite runner loads providers *by name*
    through `providers.xml`, so after a provider edit the *provider* has to be rebuilt, not just the
    test.
+6. **To attribute a dump to test code you have just added**, remove the test rather than hunting for
+   its records: copy the test file aside, `svn revert` it, rebuild and run the same fixture. The dump
+   belongs to the process, so a fixture whose only new code is the test goes from a report to *no
+   report at all* when a reference is lost, and to an identical record set when it is not — compare
+   record *sets* (the payload bytes of pre-existing blocks vary between runs; their sizes do not).
+   Restore by copy and then **touch the file**, or MSBuild's timestamp check will reuse the baseline
+   object and you will measure the baseline binary again; the log's `OK (n tests)` count is what proves
+   which binary ran.
 
 ## Instrumentation, when the report cannot name the lost reference
 
@@ -194,6 +221,8 @@ new code. Paths are relative to the FDO source root.
 | FDO Core | `FdoXmlGeometryHandler::EndHandleGML3MultiGeometry` | The geometry was popped off a raw stack without releasing the reference `Create()` had returned (the destructor, the only other pop, does release). |
 | FDO Core | `FdoSchemaXmlContext::RefClass2SchemaName` / `CheckWriteAssoc` | `AddError()` AddRefs its argument but does not take ownership; these were the last 2 of the 149 `AddError(Create(...))` sites not wrapped in an `FdoSchemaExceptionP`. |
 | FDO Core | Chained getters on AddRef'ing collections in test code | `coll->GetItem(i)->GetFoo()` leaks the reference `GetItem()` returns; rewritten as `FdoStringElementP(coll->GetItem(i))->GetString()`. |
+| OGR | `SelectTests`'s new filter helper set the filter from a bare `FdoFilter::Parse()` | `OgrCommand::SetFilter(FdoFilter*)` ends in `m_filter->AddRef()`, so the parse's own reference was lost — three calls, and the fixture's whole 36-record report. The parsed filter is an `FdoPtr` local now. The neighbouring tests are clean because `SetFilter(FdoString*)` parses *inside* the command and takes that reference. |
+| SQLite | `SelectTest`'s new test dropped the applied schema and the property-value collection | `insert->GetPropertyValues()->Add(prop)` lost the reference `GetPropertyValues()` returns, which retained the collection, the property value, its `Name` identifier and the inserted string (the dump's `aa`/`zz`/`Name` blocks); `applySchema->SetFeatureSchema(UnitTestUtil::CreateSLTSchema(...))` lost the reference the helper returned, which retained the whole SLT schema. 98 records with the test, none without it. Both references are named locals now. |
 | SqlServerSpatial | `FdoSmPhRdSqsDbObjectCacheReader::ReadNext` chained `GetItem()`s in its per-row path | `FdoSmPhFieldsP fields = GetRows()->GetItem(0)->GetFields();` plus ten `fields->GetItem(name)->SetFieldValue(...)` calls dropped the reference each `GetItem()` returns, once per row served: 48,844 blocks / 5.5 MB in the 24-test `FdoSelectTest` fixture (against 7 blocks / 8 KB with the cache disabled). The row and fields are `Ptr` locals and the fields are set through `FdoSmPhReadWrite::SetString()`, which is the schema manager's own look-up-and-release helper. Found with the CRT debug heap, by matching the leaked blocks' sizes to the types (`FdoSmPhField`, and the row) and to the number of readers; see [README.md](../README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check). |
 | FDO Core | `Create()` references never released in test code | Objects created in tests (`FilterParseTest`, `FilterTest`, `SchemaTest`) were used and dropped. |
 | GDAL | `FdoRfpConnection::SetConfiguration` nested a parse failure as a cause without releasing the caught exception | The 3 `ReadXml` catch blocks now hold the caught exception in an `FdoPtr<FdoException>` before wrapping it, so the incoming reference is released even though the new exception owns the cause. This was the entire GDAL leak. |

@@ -46,6 +46,19 @@ Consequences:
 - `coll->Add(FdoX::Create(...))` — **wrong**: `Add()` AddRefs its argument, so it does not consume
   the reference `Create()` returned. Give every `Create()` a home:
   `FdoPtr<FdoX> x = FdoX::Create(...); coll->Add(x);`
+- `cmd->SetFilter(FdoFilter::Parse(text))`, `applySchema->SetFeatureSchema(GetSchema())`,
+  `cmd->SetFeatureClassName(FdoIdentifier::Create(name))` — **wrong**: an FDO `Set*` does not consume
+  the reference you pass (it AddRefs or copies it), so the reference `Create()`/`Parse()` returned is
+  lost — a parsed filter, an identifier, or an entire schema graph. Name the argument first:
+  `FdoPtr<FdoFilter> f = FdoFilter::Parse(text); cmd->SetFilter(f);`. The string overloads —
+  `SetFilter(FdoString*)`, `SetFeatureClassName(FdoString*)` — are different in kind: they parse inside
+  the command, so the reference those parses create is the command's own and nothing of the caller's is
+  involved. A setter's ownership is a property of its implementation (and of the provider's override of
+  it), not of the interface it implements: read the one you are calling before you rely on it.
+- `insert->GetPropertyValues()->Add(prop)`, `update->GetPropertyValues()->Clear()`,
+  `rows->GetItem(0)->SetFieldValue(...)` — **wrong**: the reference a counted getter returns belongs
+  to the caller whether the call through it reads or writes. Hold the collection first:
+  `FdoPtr<FdoPropertyValueCollection> values = insert->GetPropertyValues(); values->Add(prop);`.
 
 ### SmartCast and the vetted usages of FdoPtr
 

@@ -123,15 +123,15 @@ $LogRoot = Join-Path $BuildRoot 'testlogs'
 # configuration-independent extra appended after '-NoWAIT'. InitFile is
 # resolved relative to $BuildRoot (the *Init.txt files now live next to this
 # script). Log is the log file name written under $LogRoot.
-$RdbmsDbg = 'fdo-dbg\Providers\GenericRdbms\Src\UnitTest'
-$RdbmsRel = 'fdo-rel\Providers\GenericRdbms\Src\UnitTest'
+$RdbmsDbg = 'fdo-dbg\Providers\GenericRdbms\Src\UnitTest\Dbg64'
+$RdbmsRel = 'fdo-rel\Providers\GenericRdbms\Src\UnitTest\Rel64'
 
 $TestTable = [ordered]@{
     'FdoCore' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Fdo\UnitTest'; Exe = '..\Unmanaged\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestFDOCore.txt' }
-        Release = @{ WorkDir = 'fdo-rel\Fdo\UnitTest';                 Exe = '..\Unmanaged\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestFDOCore.txt' }
+        Debug   = @{ WorkDir = 'fdo-dbg\Fdo\Unmanaged\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestFDOCore.txt' }
+        Release = @{ WorkDir = 'fdo-rel\Fdo\Unmanaged\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestFDOCore.txt' }
     }
     'Gdal' = @{
         Suite   = $null
@@ -148,8 +148,8 @@ $TestTable = [ordered]@{
     'MySql' = @{
         Suite   = $null
         InitFile = 'MySqlInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestMySql.exe'; Log = 'Dbg64_UnitTestMySQL.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestMySql.exe'; Log = 'Rel64_UnitTestMySQL.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestMySql.exe'; Log = 'Dbg64_UnitTestMySQL.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestMySql.exe'; Log = 'Rel64_UnitTestMySQL.txt' }
     }
     'OdbcAccess' = @{
         Suite   = 'OdbcAccessTests'
@@ -180,47 +180,47 @@ $TestTable = [ordered]@{
         # removes EMPLOYEES rows without putting them back, so a second run
         # against the same file fails the row-count assertions in
         # FdoAdvancedSelectTest. Restore the datastore from the pristine copies
-        # kept in the tree (next to this table's WorkDir, i.e. the exe's parent
-        # directory) before every Access run.
+        # kept in the versioned UnitTest directory, one level above WorkDir,
+        # before every Access run.
         TestData = @('MSTest.mdb', 'Lidar.mdb')
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Access.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Access.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Access.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Access.txt' }
     }
     'OdbcDbase' = @{
         Suite   = 'OdbcDbaseTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Dbase.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Dbase.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Dbase.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Dbase.txt' }
     }
     'OdbcExcel' = @{
         Suite   = 'OdbcExcelTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Excel.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Excel.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Excel.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Excel.txt' }
     }
     'OdbcMySql' = @{
         Suite   = 'OdbcMySqlTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_MySQL.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_MySQL.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_MySQL.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_MySQL.txt' }
     }
     'OdbcOracle' = @{
         Suite   = 'OdbcOracleTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Oracle.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Oracle.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Oracle.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Oracle.txt' }
     }
     'OdbcSqlServer' = @{
         Suite   = 'OdbcSqlServerTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_SqlServer.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_SqlServer.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_SqlServer.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_SqlServer.txt' }
     }
     'OdbcText' = @{
         Suite   = 'OdbcTextTests'
         InitFile = 'OdbcInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Text.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Text.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestOdbc.exe'; Log = 'Dbg64_UnitTestODBC_Text.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestOdbc.exe'; Log = 'Rel64_UnitTestODBC_Text.txt' }
     }
     'Ogr' = @{
         Suite   = $null
@@ -231,33 +231,41 @@ $TestTable = [ordered]@{
     'PostGis' = @{
         Suite   = $null
         InitFile = 'PostGisInit.txt'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestPostGIS.exe'; Log = 'Dbg64_UnitTestPostGIS.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestPostGIS.exe'; Log = 'Rel64_UnitTestPostGIS.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestPostGIS.exe'; Log = 'Dbg64_UnitTestPostGIS.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestPostGIS.exe'; Log = 'Rel64_UnitTestPostGIS.txt' }
     }
     'Sdf' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SDF\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestSDF.txt' }
-        Release = @{ WorkDir = 'fdo-rel\Providers\SDF\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestSDF.txt' }
+        # SDF tests access their data as ../../TestData, so stage a copy there
+        # relative to the executable working directory.
+        TestDataDirectory = @{ Source = '..\..\..\TestData'; Destination = '..\..\TestData' }
+        GoldenMasterDirectory = '..\..\..\Src\UnitTest'
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SDF\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestSDF.txt' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\SDF\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestSDF.txt' }
     }
     'Shp' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestSHP.txt'; Clean = 'fdo-dbg\Providers\SHP\TestData\clean.cmd' }
-        Release = @{ WorkDir = 'fdo-rel\Providers\SHP\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestSHP.txt'; Clean = 'fdo-rel\Providers\SHP\TestData\clean.cmd' }
+        # SHP tests use ../../TestData and clean generated datasets there.
+        TestDataDirectory = @{ Source = '..\..\..\TestData'; Destination = '..\..\TestData' }
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SHP\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestSHP.txt'; Clean = 'fdo-dbg\Providers\SHP\Bin\TestData\clean.cmd' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\SHP\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestSHP.txt'; Clean = 'fdo-rel\Providers\SHP\Bin\TestData\clean.cmd' }
     }
     'Sqlite' = @{
         Suite   = $null
         InitFile = $null
-        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SQLite\Src\UnitTest'; Exe = '..\..\Bin\Win64\Debug\UnitTest.exe'; Log = 'Dbg64_UnitTestSQLite.txt' }
-        Release = @{ WorkDir = 'fdo-rel\Providers\SQLite\Src\UnitTest'; Exe = '..\..\Bin\Win64\Release\UnitTest.exe'; Log = 'Rel64_UnitTestSQLite.txt' }
+        # SQLite tests read and create databases under ../../TestData.
+        TestDataDirectory = @{ Source = '..\..\..\TestData'; Destination = '..\..\TestData'; Replace = $true }
+        Debug   = @{ WorkDir = 'fdo-dbg\Providers\SQLite\Bin\Win64\Debug'; Exe = 'UnitTest.exe'; Log = 'Dbg64_UnitTestSQLite.txt' }
+        Release = @{ WorkDir = 'fdo-rel\Providers\SQLite\Bin\Win64\Release'; Exe = 'UnitTest.exe'; Log = 'Rel64_UnitTestSQLite.txt' }
     }
     'SqlServerSpatial' = @{
         Suite   = $null
         InitFile = 'SqlServerSpatialInit.txt'
         Stats   = 'SqlServer'
-        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'Dbg64\UnitTestSQLServerSpatial.exe'; Log = 'Dbg64_UnitTestSQLServerSpatial.txt' }
-        Release = @{ WorkDir = $RdbmsRel; Exe = 'Rel64\UnitTestSQLServerSpatial.exe'; Log = 'Rel64_UnitTestSQLServerSpatial.txt' }
+        Debug   = @{ WorkDir = $RdbmsDbg; Exe = 'UnitTestSQLServerSpatial.exe'; Log = 'Dbg64_UnitTestSQLServerSpatial.txt' }
+        Release = @{ WorkDir = $RdbmsRel; Exe = 'UnitTestSQLServerSpatial.exe'; Log = 'Rel64_UnitTestSQLServerSpatial.txt' }
     }
     'Wms' = @{
         Suite   = $null
@@ -770,15 +778,47 @@ function Restore-SuiteTestData {
     )
 
     $def = $TestTable[$Name]
-    if (-not ($def -and $def.TestData)) { return }
+    if (-not $def) { return }
 
     $parts = Get-CommandParts -Name $Name
-    $dataDir = Split-Path -Parent $parts.Exe
+    if ($def.TestDataDirectory) {
+        $sourceDirectory = [System.IO.Path]::GetFullPath((Join-Path $parts.WorkDir $def.TestDataDirectory.Source))
+        $destinationDirectory = [System.IO.Path]::GetFullPath((Join-Path $parts.WorkDir $def.TestDataDirectory.Destination))
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
+            throw "[$Name] test data source directory not found: $sourceDirectory"
+        }
+        if ($def.TestDataDirectory.Replace -and (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
+            Remove-Item -LiteralPath $destinationDirectory -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+        Get-ChildItem -LiteralPath $sourceDirectory -Force |
+            Where-Object { $_.Name -ne '.svn' } |
+            Copy-Item -Destination $destinationDirectory -Recurse -Force
+        Write-Host "  TestData: staged $sourceDirectory in $destinationDirectory" -ForegroundColor DarkGray
+    }
+
+    if ($def.GoldenMasterDirectory) {
+        $sourceDirectory = [System.IO.Path]::GetFullPath((Join-Path $parts.WorkDir $def.GoldenMasterDirectory))
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
+            throw "[$Name] golden master directory not found: $sourceDirectory"
+        }
+        $goldenMasters = @(Get-ChildItem -LiteralPath $sourceDirectory -File -Filter '*master.*')
+        if ($goldenMasters.Count -eq 0) {
+            throw "[$Name] no golden master files found in: $sourceDirectory"
+        }
+        foreach ($goldenMaster in $goldenMasters) {
+            Copy-Item -LiteralPath $goldenMaster.FullName -Destination $parts.WorkDir -Force
+        }
+        Write-Host "  GoldenMasters: staged $($goldenMasters.Count) files in $($parts.WorkDir)" -ForegroundColor DarkGray
+    }
+
+    if (-not $def.TestData) { return }
+
     foreach ($file in $def.TestData) {
-        $source = Join-Path $parts.WorkDir $file
+        $source = Join-Path (Split-Path -Parent $parts.WorkDir) $file
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
 
-        $target = Join-Path $dataDir $file
+        $target = Join-Path $parts.WorkDir $file
         Copy-Item -LiteralPath $source -Destination $target -Force
 
         # A leftover ACE lock file belongs to a database that was not shut down
@@ -786,7 +826,7 @@ function Restore-SuiteTestData {
         $lock = [System.IO.Path]::ChangeExtension($target, '.ldb')
         Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
 
-        Write-Host "  TestData: restored $file in $dataDir" -ForegroundColor DarkGray
+        Write-Host "  TestData: restored $file in $($parts.WorkDir)" -ForegroundColor DarkGray
     }
 }
 

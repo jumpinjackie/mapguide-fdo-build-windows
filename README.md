@@ -112,6 +112,92 @@ the schema-manager catalog reader's field lookups were made ownership-correct (s
 The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a
 patch at [fdo-sqs-perf.patch](./fdo-sqs-perf.patch) (apply with `svn patch` from `fdo-dbg`).
 
+## Batch parameter values / bulk insert for SQL Server Spatial (parked)
+
+Separate from the round-trip work above: an external client's "bulk copy" feature asks a provider for
+`FdoIInsert::GetBatchParameterValues()` and, when a provider answers, sends many features through one
+insert command. The SQL Server Spatial provider answers `NULL`, so those inserts go one row per
+`Execute()`.
+
+This has been investigated but **not implemented**: the findings, the two candidate paths (an ODBC
+parameter-array batch that the RDBI/ODBC layers already have the plumbing for, and a BCP-backed bulk
+insert behind a new optional RDBI capability), the identity/transaction obstacles, the ABI check under
+the current `freeze` mode, and the open questions for the client are all parked in
+[HANDOFF-SqlServerSpatial-BulkInsert.md](./HANDOFF-SqlServerSpatial-BulkInsert.md).
+
+## Connection and command timeouts for SQL Server Spatial (FDO ticket 880)
+
+[ticket 880](https://trac.osgeo.org/fdo/ticket/880) reports that a temporarily unavailable SQL Server
+leaves MapGuide not answering requests at all. The FDO half of that was two declared capabilities that
+had never been implemented. `FdoIConnection` has `Get/SetConnectionTimeout()` (milliseconds) and
+`FdoICommand` has `Get/SetCommandTimeout()`, but every GenericRdbms provider answered
+`SupportsTimeout() == false`, returned 0 from the getters and ignored the setters;
+`FdoRdbmsConnection::mConnectionTimeout` and `FdoRdbmsCommand::m_TimeOut` were written by nothing and
+read by nothing, and nothing in the tree ever set `SQL_ATTR_LOGIN_TIMEOUT` or `SQL_ATTR_QUERY_TIMEOUT`.
+The only bound on a connect attempt was therefore whatever the ODBC driver applied to itself -
+Microsoft's SQL Server drivers default to 15 s, plus the OS TCP retry, which is the "around 20 sec" the
+ticket measured.
+
+Both timeouts now live in the GenericRdbms layer and are applied by the RDBI driver:
+
+* `rdbi_set_connect_timeout()` and `rdbi_set_query_timeout()` (with new optional `set_connect_timeout`
+  and `set_query_timeout` entries in the RDBI methods table) carry a value in seconds to the vendor
+  driver. Drivers that cannot honour one leave the entry NULL, and the call is a no-op for them.
+* Both ODBC drivers (`Src/ODBCDriver`, `Src/SQLServerSpatial/ODBCDriver`) record the values, set
+  `SQL_ATTR_LOGIN_TIMEOUT` on each new connection handle before `SQLConnect`/`SQLDriverConnect`, and set
+  `SQL_ATTR_QUERY_TIMEOUT` on each statement handle as it is allocated - the query timeout is a statement
+  attribute, so it is applied per statement rather than per connection.
+* `FdoRdbmsConnection` implements `Get/SetConnectionTimeout()` (milliseconds in, whole seconds applied)
+  and hands the value to `DbiConnection`, which passes it on before connecting. The default is 0, leaving
+  the native driver's own timeout in place, so a client that asks for nothing sees the old behaviour.
+* Every command class - the `FdoRdbmsCommand`/`FdoRdbmsFeatureCommand` templates, the provider's
+  `FdoRdbmsSimple*Command` family used by this provider for Select/Insert/Update/Delete, and the schema,
+  datastore, spatial-index and SQL commands - hands its timeout to the connection when it is created and
+  whenever the timeout changes, so the driver is always holding the timeout of the most recently created
+  or configured command.
+* `FdoRdbmsSqlServerConnectionCapabilities::SupportsTimeout()` and
+  `FdoRdbmsSqlServerCommandCapabilities::SupportsTimeout()` now answer `true`. The connection one is what
+  makes MapGuide's `FDOConnectionTimeoutCustom` do anything: `MgFdoConnectionManager::SetConnectionTimeout()`
+  is gated on that capability, so the setting was previously skipped silently for every GenericRdbms
+  provider.
+
+Measured with throwaway probes against this tree, in Debug and Release. The connection cases point at a
+listener that accepts a connection but never answers the TDS login (`127.0.0.1:1444`); the command cases
+are a `WAITFOR DELAY '00:00:10'` on the test server, both as a bare statement (the one-shot
+`SQLExecDirect` path) and as `select 1 as x; waitfor ...` (the cursor path the feature commands use).
+
+| Timeout | Not asked for | Asked for 3000 ms |
+|---|---:|---:|
+| Connection (Debug / Release) | 15,015 ms / 15,031 ms | 3,031 ms / 3,031 ms |
+| Command, one-shot path (Debug / Release) | 10,000 ms / 10,000 ms | 3,000 ms / 3,000 ms |
+| Command, cursor path (Debug / Release) | 10,015 ms | 3,015 ms / 3,015 ms |
+
+A timed-out command fails with the driver's `Query timeout expired`; the unset cases run to completion,
+so nothing changes for a client that asks for no timeout. Fixtures, both configurations:
+`SqlServerSpatial` `ConnectTests,FdoCapabilityTest,FdoConnectTest,DescribeSchemaTest,FdoSqlCmdTest,FdoDatastoreTest,FdoSpatialContextTest`
+is `OK (58 tests)`, `FdoSelectTest` is `OK (24 tests)`, `FdoApplySchemaTest` is `OK (5 tests)` (Debug,
+11 min), and the `MySql`/`PostGis` `ConnectTests` stay `OK (4 tests)`, which is what exercises the no-op
+path in drivers with no such methods.
+
+The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a patch at
+[fdo-timeouts.patch](./fdo-timeouts.patch) (apply with `svn patch` from `fdo-dbg`; the same change is in
+`fdo-rel`). The diagnosis, the repeated measurements and the MapGuide-side analysis are in
+[HANDOFF-FdoTicket880-Timeouts.md](./HANDOFF-FdoTicket880-Timeouts.md), and the two throwaway probes whose
+numbers are quoted above are in [probes/](./probes), each documenting its own usage in its header
+comment.
+
+One thing this does not fix, because it is not in the provider: the ticket's "all other requests were
+blocked" is MapGuide holding its manager-wide `sm_mutex` across `FdoIConnection::Open()` -
+`MgFdoConnectionManager::Open()` takes the guard and the blocking `Open()` happens inside it - so one
+dead server parks every other FDO request in the process until the connect gives up. The connection
+timeout above only bounds how long that is.
+
+That lock is the connection pool's, not FDO's: it guards the provider registry, the per-provider slot
+counters and the connection cache's in-use flags, and the pool slot is already reserved before the open
+begins - so it is scoped wider than the state it protects. Narrowing it (and the analysis behind that
+claim, including why the recursive mutex and the reservation/claim steps have to stay as they are) is in
+[the handoff](./HANDOFF-FdoTicket880-Timeouts.md#6-the-mapguide-half-analysed-not-changed).
+
 ## Test data stores are named after the Windows account (`fdo_<account>`)
 
 The database-backed FDO suites (MySQL, PostGIS, SQL Server Spatial) get the name of the data store
@@ -141,7 +227,61 @@ store first, so the first run is green too (PostGIS, MySQL and SQL Server Spatia
 Those three test files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
 [fdo-connectioninfo-datastore.patch](./fdo-connectioninfo-datastore.patch).
 
+## The PostGIS schema tests ignore the schemas the template database contributes
+
+A PostGIS data store is created from a template database (`postgis_30_sample`, `template_postgis`,
+...), so every test database inherits whatever schemas the template carries. A container's template
+can hold the schemas the PostGIS extensions install — `tiger`, `tiger_data`, `topology` — and the
+provider maps *every* PostgreSQL schema of the database to a feature schema, so those schemas come
+back from `FdoIDescribeSchema` and land in the master file comparisons:
+
+```
+1) test: PostGisSchemaMgrTests.testGenDefault (F)
+ "Output file PostGIS_29245_gen_default1.xml differs from expected output file
+  PostGIS_29245_gen_default1_PostGIS_master.txt"
+5) test: PostGisSchemaMgrTests.testMaterializedViews (F)  "schemas->GetCount() == 2"
+```
+
+They are false positives: the schemas are not part of the datastore the tests build. The tests now
+drop them before comparing, through a provider hook:
+
+* `ConnectionUtil::IsExtraSchema()` — a provider says whether a feature schema is external to the
+  datastore under test. The default is `false`, so no other provider's comparison changes.
+* `UnitTestUtil::RemoveExtraSchemas()` — removes the schemas the hook names, and is called on every
+  schema collection the tests use: inside `ExportDb()`, and at each `FdoIDescribeSchema::Execute()`
+  in `SchemaMgrTests`, `FdoApplySchemaTest::TestNoMeta` and
+  `PostGisSchemaMgrTests::testMaterializedViews`.
+* `PostGisConnectionUtil::IsExtraSchema()` — ignores the three extension schemas by name, and any
+  other schema that carries no classes and is not the default `public` schema (the tests put at
+  least one class in every schema they create, so an empty one was inherited from the template).
+  `public` is never ignored: the tests expect it, and it is legitimately empty in some masters.
+
+Those files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
+[fdo-postgis-extra-schema.patch](./fdo-postgis-extra-schema.patch) (apply with `svn patch` from
+`fdo-dbg`).
+
 ## The ODBC Access suite runs one fixture per process (`OdbcAccess`)
+
+The FDO core and GenericRdbms suites run from their executable directories, where the build stages
+their golden masters and test inputs (`Fdo\Unmanaged\Bin\Win64\Debug`/`Release` for FDO core,
+`GenericRdbms\Src\UnitTest\Dbg64`/`Rel64` for GenericRdbms). Generated comparison/output files
+therefore stay in the build output instead of accumulating in the versioned test source directories;
+comparisons use the staged golden masters in the working directory.
+
+The SDF suite also runs from its executable directory. Its tests use paths relative to
+`../../TestData`, so the runner stages the versioned `Providers\SDF\TestData` contents into
+`Providers\SDF\Bin\TestData` before running the suite. Generated SDF data stays in this build-output
+copy rather than in the source test data.
+
+The SHP suite uses the same `../../TestData` layout and also runs from its executable directory.
+The runner stages `Providers\SHP\TestData` into `Providers\SHP\Bin\TestData` and runs its cleanup
+script from that staged copy, keeping generated shapefiles and indexes out of the versioned test
+data.
+
+The SQLite suite also runs from its executable directory and stages `Providers\SQLite\TestData`
+into `Providers\SQLite\Bin\TestData`. That staged directory is refreshed from the source before
+each run, so test-created or modified SQLite databases remain in build output and each run starts
+from the original test data.
 
 The Access suite is the one suite that could not be run as a whole. From roughly its 63rd test
 onwards, the tests that open a **second** connection while the fixture's own connection is open
@@ -184,8 +324,8 @@ Two further notes:
   and, unlike the fixture it overrides, does not put them back, so a second run against the same
   file fails `FdoAdvancedSelectTest`'s row counts (`Expected my count to be 7, got 5`,
   `Expected a different average salary`). The runner therefore restores `MSTest.mdb` and
-  `Lidar.mdb` from the pristine copies kept beside the suite's working directory (the versioned
-  ones in the FDO tree) before every Access run, and removes any leftover `.ldb`.
+  `Lidar.mdb` from the pristine versioned copies in the parent `UnitTest` source directory before
+  every Access run, and removes any leftover `.ldb`.
 - The budget belongs to the ACE **engine** in the process, not to the Access file. All four
   ACE-backed code paths are the same `ACEODBC.DLL`, and refilling and draining a pool of five
   connections refuses the 34th creation with the same Jet -1036 `Too many client tasks` on the
