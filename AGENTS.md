@@ -13,7 +13,7 @@ an agent introduced in the sibling Linux repo
 ([mapguide-fdo-docker-build](https://github.com/jumpinjackie/mapguide-fdo-docker-build)) was a **lost
 counted reference**, and the rules that prevent them are identical on both platforms — the code is the
 same code. [CPP_STYLE.md](./CPP_STYLE.md) is the ownership contract;
-[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) is the catalogue of real leaks, the shapes they
+[docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) is the catalog of real leaks, the shapes they
 take, and how each one was found.
 
 ## Current cycle
@@ -34,7 +34,7 @@ Durable content (edited and committed to git):
 - `Run-FdoTests.ps1` — the FDO unit-test runner, including its suite table
 - `revnum.pl` — SVN revision extractor used by `mapguide_*_setup.bat`
 - `*Init.txt` — the init files the database-backed suites need
-- `docs/**` — the memory-leak catalogue
+- `docs/**` — the memory-leak catalog
 - `AGENTS.md`, `CPP_STYLE.md` — this file and the C++/ownership rules
 
 Generated content (never hand-edited; gitignored — see `.gitignore`):
@@ -89,7 +89,7 @@ Rules for working with the source trees:
   LSP); the Debug copy is enough for reading code.
 - The GitHub repositories `jumpinjackie/fdo` and `jumpinjackie/fdo_cmake` are **unofficial by-products
   of abandoned SVN→Git experiments**. They are not authoritative, may be stale or divergent, and must
-  **not** be used as a point of reference or cited for behaviour, capabilities or history.
+  **not** be used as a point of reference or cited for behavior, capabilities or history.
 - For history, query the working copy with the read-only SVN commands instead of any mirror:
   `svn log [-l N] [-r REV] path`, `svn blame`, `svn diff -r A:B`, `svn cat -r REV path`, `svn info`.
   Never `svn commit` (see the commit rule above).
@@ -265,7 +265,7 @@ shows `1`.
 
 A Debug build is required for all of these; a Release run will not report anything.
 
-1. **Read the code against the rules above first.** Most of the catalogued leaks are lost references
+1. **Read the code against the rules above first.** Most of the cataloged leaks are lost references
    that are visible on inspection — an unwrapped `Create()`, a chained getter, a raw member pointing
    back at its owner. [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#the-recurring-shapes) is
    the checklist.
@@ -347,7 +347,7 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
 ## Platform notes
 
 - A Win32 `CRITICAL_SECTION` is **recursive**: the owning thread may enter it again. FDO provider code
-  in this tree is written against that behaviour (the SQLite provider's `CriticalSectionHolder` is
+  in this tree is written against that behavior (the SQLite provider's `CriticalSectionHolder` is
   re-entered by the same thread through the metadata build). A lock that a thread takes twice is free
   here and a deadlock on Linux, where the same shim is a `pthread_mutex_t`; the sibling repo carries
   that shim and the r7133/r7150 history. When adding a lock to provider code, say whether it depends on
@@ -358,7 +358,7 @@ filter and expression grammars, `Geometry.vcproj`/`.vcxproj` for FGF). So:
   MapGuide ones: `mapguide_dbg_setup.bat`/`mapguide_rel_setup.bat` write `mapguide_40_revision.txt`
   into `%CD%` and `mapguide_dbg.bat`/`mapguide_rel.bat` read it back from `%CD%`, so those four must be
   run from the repository root or the version stamping silently uses the wrong file (or none).
-- Platform initialisation is split in the FDO sources and must stay split: GCC builds run
+- Platform initialization is split in the FDO sources and must stay split: GCC builds run
   `__attribute__((constructor))` hooks, Windows uses `DllMain`, and the two live in opposite arms of
   `#ifndef _WIN32`/`#else` in `Fdo.cpp`, `GeometryDll.cpp` and the GenericRdbms providers.
   `__attribute__((visibility(...)))` and friends are GCC/Clang only, so moving one out of its guard
@@ -386,13 +386,13 @@ directory names, because some of it never forms a boundary at all:
 
 The provider↔core contract is a single symbol, `CreateConnection`, resolved with `GetProcAddress` /
 `dlsym` (see `Fdo\Unmanaged\Src\Fdo\ClientServices\ProviderDef.h`). `_load`/`_unload` are not part of
-it, and on Windows those hooks do not exist at all — this platform initialises through `DllMain`.
+it, and on Windows those hooks do not exist at all — this platform initializes through `DllMain`.
 
 ### Same source is not the same ABI
 
 This is the rule that actually bites when swapping DLLs, and it has no Linux counterpart:
 
-- A provider DLL and `FDO.dll` must come from the **same toolset and the same flag flavour**. Mixing
+- A provider DLL and `FDO.dll` must come from the **same toolset and the same flag flavor**. Mixing
   `/MD` with `/MDd`, or differing `_ITERATOR_DEBUG_LEVEL`, gives link-time mismatch diagnostics where
   the objects are static and mismatched heaps — or worse — across a DLL boundary where they are not.
   Copying a DLL between two configurations of the same source is therefore not a compatibility test.
@@ -437,6 +437,15 @@ An explicit instruction in the task overrides the line for that task only; say w
 
 ## Code style
 
+- **Documentation and comments are US English** — this applies to every word committed under the
+  paths above: the `.md` files (`README.md`, this file, `CPP_STYLE.md`, `docs/**`, the
+  `HANDOFF-*.md` files) and every comment (`//` in the C++ trees, `REM` in the batch wrappers, `#` in
+  `Run-FdoTests.ps1`, `--` in SQL). Write *behavior*, *initialization*, *optimize*, *catalog*,
+  *parameterize*, *summarize*, *normalize*, *analyze* — not *behaviour*, *initialisation*,
+  *optimise*, *catalogue*, *parameterise*, *summarise*, *normalise*, *analyse*. Commit messages
+  follow the same rule. Two things keep their existing spelling: an **identifier** or quoted string
+  (renaming it changes code), and a **quotation from an upstream report** (rewriting it misquotes the
+  source).
 - **Batch files** — `@echo off`, quote every path (`set "VAR=%~dp0..."`), assert with
   `if errorlevel 1` / `if not exist`, and follow the existing wrappers' `:parse_args` loop for options.
   A wrapper that only sets up an environment or forwards flags should not duplicate the build
@@ -458,9 +467,9 @@ An explicit instruction in the task overrides the line for that task only; say w
   `-Fixture <registry>` — in the matching configuration. Report the suite's result
   (`OK (n)`) rather than just "it built".
 - **Release vs Debug** — a Debug pass does not validate the Release build, and here it is weaker
-  still: Debug and Release also differ in CRT flavour and `_ITERATOR_DEBUG_LEVEL`, so the two are
-  different runtimes, not the same runtime at different speed. Optimisation also removes the NULL-`this`
-  guards a Debug build keeps (see [CPP_STYLE.md](./CPP_STYLE.md#null-this-optimisation-and-release-builds)).
+  still: Debug and Release also differ in CRT flavor and `_ITERATOR_DEBUG_LEVEL`, so the two are
+  different runtimes, not the same runtime at different speed. Optimization also removes the NULL-`this`
+  guards a Debug build keeps (see [CPP_STYLE.md](./CPP_STYLE.md#null-this-optimization-and-release-builds)).
   Because the two configurations cannot be built simultaneously here, treat the second one as a planned
   pass rather than an afterthought.
 - **Shipped-header changes** — check the [current mode](#current-cycle) first, then
@@ -505,7 +514,7 @@ An explicit instruction in the task overrides the line for that task only; say w
   at a time is unlimited. The Access suite is therefore run as one process per fixture, and its
   prefabricated datastore is restored from the pristine copies in the tree before every run — the
   Access Delete fixture removes `EMPLOYEES` rows without putting them back. Both
-  behaviours live in the `OdbcAccess` entry of `Run-FdoTests.ps1`, and
+  behaviors live in the `OdbcAccess` entry of `Run-FdoTests.ps1`, and
   [README.md](./README.md#the-odbc-access-suite-runs-one-fixture-per-process-odbcaccess) has the
   measurements. The FDO-tree part (the registry name `MessageTest` needs to be a chunk on its own,
   and the same note added to the tree's `OpenSourceBuild__README.txt`) is kept as
@@ -520,6 +529,6 @@ An explicit instruction in the task overrides the line for that task only; say w
   needed to build or test the C++ trees.
 - The GDAL provider's Windows message project has never merged anything but the static RC template, so
   its message table is empty and GDAL error text reaches clients only through the default strings
-  compiled into the `NlsMsgGet*` calls. Adding or parameterising a message in `GRFPMessage.mc`
+  compiled into the `NlsMsgGet*` calls. Adding or parameterizing a message in `GRFPMessage.mc`
   (e.g. `GRFP_95_CANNOT_GET_IMAGE_INFO`, `GRFP_111`–`114`) therefore changes nothing in the Windows
-  catalogue until that project is wired up like the other providers'.
+  catalog until that project is wired up like the other providers'.

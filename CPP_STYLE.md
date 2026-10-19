@@ -31,6 +31,11 @@ repository does not build, so a comment must not name a downstream consumer othe
   and at most what MapGuide does with it. A defect reported from outside is described as a broken FDO
   contract, with the reporting product left in the commit message rather than the source.
 
+A comment is documentation, so it is written in **US English**: *behavior*, *initialization*,
+*optimize*, *catalog*, *parameterize*, *summarize*, not *behaviour*, *initialisation*, *optimise*,
+*catalogue*, *parameterise*, *summarise*. Keep an identifier or a quoted string spelled as the code
+or the upstream report has it.
+
 ## Memory management
 
 Both trees use intrusive reference counting with custom smart pointers. Never `delete` these
@@ -127,13 +132,13 @@ capability, a processor, a context): the helper may hold its creator only throug
 back-pointer, because the creator already owns the helper.
 
 Cycle members are not fixable by releasing "harder" — every participant has a legitimate reference.
-Fixing one means changing what the class means by "owns", which is why the catalogued cycle cases in
+Fixing one means changing what the class means by "owns", which is why the cataloged cycle cases in
 [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) are recorded rather than patched.
 
-### NULL `this`, optimisation and Release builds
+### NULL `this`, optimization and Release builds
 
-A member function must never be entered on a NULL object. That is undefined behaviour, and the
-optimiser is entitled to assume `this` is never NULL, so it may delete an `if (this)`-style guard and
+A member function must never be entered on a NULL object. That is undefined behavior, and the
+optimizer is entitled to assume `this` is never NULL, so it may delete an `if (this)`-style guard and
 then dereference the pointer anyway. Code that survives a Debug build can therefore fault in a Release
 build. MSVC is no different from GCC in principle — it assumes `this` is non-null just as readily — but
 it is less predictable about *when* it elides the check, so a Debug pass here is not evidence of
