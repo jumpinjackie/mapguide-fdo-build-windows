@@ -16,6 +16,21 @@ Keep any new code within C++11.
 `wchar_t` is 16-bit on MSVC and 32-bit on GCC/Linux, and the same sources compile on both. Do not
 assume a character width in size or copy arithmetic — use the existing `A2W`/`W2A`/`SLOW` helpers.
 
+## Comments
+
+Comment on the code and on what it does, not on who noticed. FDO ships to many clients that this
+repository does not build, so a comment must not name a downstream consumer other than MapGuide:
+
+- State the **observable effect**: the class definition a reader returns carries empty
+  `fdo:geometricTypes` / `fdo:geometryTypes` attributes, so a consumer sees a geometry property that
+  allows no geometry types — not "this broke application X".
+- **MapGuide is the one exception**, because `MgDev` is in this repository and shares the change: name
+  it when the comment explains what MapGuide code here does with the result
+  (`MgServerFeatureUtil::SerializeToXml`, the schema a `SELECTFEATURES` response carries).
+- The same holds in test code, including the comment on a regression test: say what FDO must return,
+  and at most what MapGuide does with it. A defect reported from outside is described as a broken FDO
+  contract, with the reporting product left in the commit message rather than the source.
+
 ## Memory management
 
 Both trees use intrusive reference counting with custom smart pointers. Never `delete` these

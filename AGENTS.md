@@ -445,6 +445,8 @@ An explicit instruction in the task overrides the line for that task only; say w
   `ValidateSet`, a data table for the per-suite details, and no interactive prompts so it can run
   unattended.
 - **C++** — see [CPP_STYLE.md](./CPP_STYLE.md), which applies to edits under `MgDev` and the FDO trees.
+  Its [Comments](./CPP_STYLE.md#comments) rule binds every comment in those trees: describe the
+  observable effect, and name no downstream FDO consumer other than MapGuide.
 
 ## Validation (definition of done)
 
@@ -477,7 +479,10 @@ An explicit instruction in the task overrides the line for that task only; say w
   Before building, re-read your own diff for the two shapes that keep causing this —
   `X->GetColl()->Add(...)` and `SetX(Create|Parse(...))`. When you restore a reverted file by copy,
   **touch it** (or check that the log's `OK (n tests)` count shows your test ran): the preserved mtime
-  can be older than the object file, and MSBuild then silently runs the baseline binary again.
+  can be older than the object file, and MSBuild then silently runs the baseline binary again. Keep the
+  backup per provider — restoring from a directory that holds two providers' files with a wildcard
+  leaves the other provider's test sources sitting unversioned in the tree — and finish with
+  `svn status` on every directory you copied into.
 - **Memory-leak fixes** — state which rule above the defect broke, fix it, re-run the affected suite
   in Debug, and say what the leak probe showed before and after (a refcount, a `_CrtMemDifference`
   delta, or the record count). Add a row to [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) for
