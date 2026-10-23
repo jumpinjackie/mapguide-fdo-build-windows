@@ -119,6 +119,36 @@ They are listed in rough order of how often they were the answer.
   leaked reference per level of depth. This is what kept a WMS capabilities tree (and its whole style
   and CRS subtrees) alive after the commands that had looked a layer up.
 
+### The mirror image: a borrow that is attached (not a leak)
+
+Every shape above ends with one reference too many. The opposite mistake — one too few, with the object
+still referenced — is a **use-after-free**, and it belongs in this catalogue because the same attach
+semantics produce it and because it does not look like a memory bug when it fails.
+
+`FdoPtr::operator=(T*)` attaches; it adds no reference. Taking a pointer *out of* an `FdoPtr` and
+storing it in another one therefore transfers nothing:
+
+```
+FdoPtr<FdoExpression> left = cmp->GetLeftExpression();
+FdoIdentifier* idf = dynamic_cast<FdoIdentifier*>(left.p);
+prop = idf;                     // attaches: only `left` owns a reference
+```
+
+When `left` is destroyed the identifier goes with it, and `prop` is left pointing at freed memory. The
+assignment itself is silent: the object is destroyed *while still referenced*, and the fault arrives
+later, in whatever destructor next releases the structure the object belonged to. In the case this was
+found in, a 950-term filter tree was being released and the crash landed in
+`FdoComparisonCondition::~FdoComparisonCondition` — the innermost frame of a perfectly regular chain of
+`FdoBinaryLogicalOperator` destructors ending at a *leaf*. That shape (a leaf destructor faulting at the
+bottom of its own chain) only makes sense if the leaf had already been freed, which is what pointed at
+the borrow. `FDO_SAFE_ADDREF` the borrow, or keep the owning `FdoPtr` alive for as long as it is used.
+
+The same reading applies in reverse to *teardown*: the recursive destructor is itself a place where
+depth is unbounded. A tree with one node per term — the disjunction a selection of many features
+produces — has to be dismantled with an explicit worklist, detaching and deleting a child only when
+`GetRefCount() == 1`, exactly as the ownership contract in
+[CPP_STYLE.md](../CPP_STYLE.md#ownership-contract) requires.
+
 ## How to read a leak report
 
 Records are aggregated by allocation stack, so a record shows the *allocating* frames, not the

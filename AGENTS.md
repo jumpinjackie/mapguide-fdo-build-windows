@@ -5,8 +5,8 @@
 This repository is a Windows build and test environment for MapGuide Open Source 4.0 and Feature Data
 Objects (FDO) 4.2. It is a **virtual monorepo**: it orchestrates the build of two externally-versioned
 source trees (Subversion working copies, not submodules) plus the MapGuide installer tooling, using
-batch wrappers around each tree's own build system, and it carries a unified FDO unit-test runner.
-Everything runs on the host with MSVC — there are no containers, and only x64 is supported.
+batch wrappers around each tree's own build system, and it carries unified FDO and MapGuide test
+runners. Everything runs on the host with MSVC — there are no containers, and only x64 is supported.
 
 Read [Memory management](#memory-management) before writing FDO or MapGuide code. Nearly every defect
 an agent introduced in the sibling Linux repo
@@ -32,6 +32,7 @@ Durable content (edited and committed to git):
 - `README.md` — requirements, the thirdparty layout, the build sequence
 - `*.bat` — the build wrappers and their flag handling
 - `Run-FdoTests.ps1` — the FDO unit-test runner, including its suite table
+- `Run-MgTests.ps1` — the MapGuide server test runner, including its scope table
 - `revnum.pl` — SVN revision extractor used by `mapguide_*_setup.bat`
 - `*Init.txt` — the init files the database-backed suites need
 - `docs/**` — the memory-leak catalog
@@ -48,7 +49,9 @@ Generated content (never hand-edited; gitignored — see `.gitignore`):
 
 When a build flag has to change, change the wrapper `.bat` that owns it. `fdo_dbg.bat`/`fdo_rel.bat`
 set the thirdparty environment variables, then parse and forward options to the tree's own `build.bat`;
-a build run by hand with different flags is not reproducible for the next agent.
+`mapguide_dbg.bat`/`mapguide_rel.bat` set up the MSVC environment, then forward options to `MgDev`'s
+`build.bat` and decide which of its phases (install, installer preparation) a component selection
+implies. A build run by hand with different flags is not reproducible for the next agent.
 
 ### Source trees
 
@@ -103,7 +106,7 @@ must **not** mention files the other one owns:
 | The changed files are under | They are committed to | The message covers |
 |-----------------------------|-----------------------|--------------------|
 | `fdo-dbg/`, `fdo-rel/`, `MgDev/`, `Installer/`, `MgInstantSetup/` | the SVN working copy | only those paths |
-| anything else git tracks — `README.md`, `*.bat`, `Run-FdoTests.ps1`, `revnum.pl`, `*Init.txt`, `docs/**`, `AGENTS.md`, `CPP_STYLE.md` | this git repository | only those paths |
+| anything else git tracks — `README.md`, `*.bat`, `Run-FdoTests.ps1`, `Run-MgTests.ps1`, `revnum.pl`, `*Init.txt`, `docs/**`, `AGENTS.md`, `CPP_STYLE.md` | this git repository | only those paths |
 
 - An **SVN** commit message describes **only** what `svn status` / `svn diff` report inside that one
   working copy. Run `svn diff --summarize` from the working copy root before writing a word of the
@@ -118,7 +121,8 @@ must **not** mention files the other one owns:
   file is and is not.
 - The git-tracked files most often mistaken for source-tree content are `docs/fdo-memory-leaks.md`,
   which records fixes made in the FDO trees, and `Run-FdoTests.ps1`, whose suite table is edited
-  alongside them. Both are committed to git, so neither belongs in an SVN commit message.
+  alongside them. Both are committed to git, so neither belongs in an SVN commit message. The same
+  applies to `Run-MgTests.ps1`, whose scope table is edited alongside the MapGuide tests it runs.
 - Verification evidence — the suites and configurations a change was tested with, and the before/after
   test and leak totals — is a claim about the change rather than a file, and is always welcome in the
   message. Take the subject and body conventions from that history's own recent messages (`svn log` for
@@ -164,6 +168,22 @@ setup step must be re-run after every FDO build, because it is what copies the F
 `MgDev\Oem\FDO`. `BUILD_INSTALLER=1` and `BUILD_INSTANTSETUP=1` add the installer and InstantSetup
 bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
 
+Both wrappers accept the tree's own options, most usefully `-w=<component>` to build a subset
+(`-w=server`, `-w=web`, `-w=bindings`, ...) and `-h` for the exhaustive list. A component other than
+`all`/`allnodoc` also skips the installer preparation step, because that step packages a complete
+installation and a partial one is not a valid input for it; `oem`, `bindings` and `portable` are
+build-only and skip the installation step as well, because the tree's own `build.bat` has no install
+path for them:
+
+```
+mapguide_rel.bat -w=server      REM just the server tree, which the tests exercise
+```
+
+`-w=server` is the MapGuide counterpart of `fdo_rel.bat -ntp -w=<component>`: it is the whole
+edit/build/test loop for server code, and it is what makes that loop short — about a minute when
+incremental, against the full build that also builds and installs the web tier, the bindings,
+mg-portable, the documentation and the installer.
+
 ### Test
 
 ```
@@ -201,6 +221,89 @@ bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
 WFS and WMS query live public servers, so they depend on hosts that come and go; treat their failures
 as environmental until proven otherwise.
 
+### Test MapGuide
+
+```
+.\Run-MgTests.ps1 -List                          REM show the scopes and the command each would run
+.\Run-MgTests.ps1 -Test Misc                     REM one scope, Release tree
+.\Run-MgTests.ps1 -Configuration Debug -Test FeatureService
+.\Run-MgTests.ps1 -Test Geometry, MdfModel
+```
+
+- The MapGuide tests are not CppUnit executables of their own. They are the `MgUnitTesting.dll` module
+  that `mgserver.exe` loads through its own `test` command (Catch2 v2), so every run costs a server
+  start and stop and nothing has to be installed, configured or left running:
+  `mgserver test <scope>`.
+- A **scope** is a Catch2 tag registered by one file under `MgDev\Server\src\UnitTesting`, so the
+  finest granularity available is that file — there is no `-Fixture` equivalent. `-List` prints each
+  scope with the test source file and the product area it covers, and the table at the end of this
+  section is the same mapping.
+- `-Configuration` selects the tree (`Release` → `MgDev\Server\bin\Release64`, `Debug` →
+  `MgDev\Server\bin\Debug64`). The default is `Release`, unlike the FDO runner, because Release is the
+  configuration that is normally built here; a Debug pass does not validate Release and vice versa.
+- A Debug run needs the Debug FDO SDK staged first, because `mapguide_dbg_setup.bat` copies
+  `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO` and that tree does not exist until `fdo_dbg.bat` has been
+  run. With only the Release FDO staged, `-Configuration Debug` reports `SKIPPED`, which is the
+  intended signal rather than a failure.
+- Each scope's output is streamed and tee'd to `testlogs\MgRel64_<Scope>.txt` /
+  `testlogs\MgDbg64_<Scope>.txt`. The script exits non-zero if any scope failed and reports `SKIPPED`
+  when the executable or the staged test data is missing — a skipped scope is a build that has not
+  been done, not a pass. If a MapGuide server is already running it refuses to start (`exit 2`)
+  instead of letting every scope fail for the wrong reason.
+- The test data comes from `MgDev\UnitTest\TestData` and is staged to `MgDev\Server\bin\UnitTestFiles`
+  by the server build's own PostBuild step; the suites read it as `../UnitTestFiles` relative to the
+  server's working directory, which is why the runner works from the build output and does not need
+  `MgDev\UnitTest\run_server_tests.bat` (that script exists for a *configured installation* and is used
+  by the web-tier and mapagent suites, not by this loop).
+- A scope that ran **no** test cases is reported as `FAILED`, not as a pass. That is what a stale
+  `MgUnitTesting.dll` looks like: `mgserver test list` names every scope the source registers, so a
+  binary that predates a newly added test file advertises the scope and then matches none of it.
+- **The scope name must be bare.** `mgserver` brackets whatever it is given (`[...]`) and
+  `TestServiceFactory::IsRunningSuite()` matches the *unbracketed* suite name when it prepares that
+  suite's data, so a Catch2 tag expression — `Misc]~[SlowTests`, which parses and looks like a way to
+  skip the slow coordinate-system tests — runs the tests with none of their data prepared and fails
+  them for the wrong reason. Use the scope, and accept its whole runtime.
+- Iteration cost on the Release tree, measured with the whole server suite green except where
+  [Known issues](#known-issues) says otherwise: `Geometry` 1 s, `Misc` 6 s, `RenderingService` 25 s,
+  `FeatureService` 74 s, `CoordinateSystem` 59 s, `TileService` 84 s, every scope 5 min.
+- A new test belongs to an existing scope: tag its `TEST_CASE` with that suite's tag (e.g. `"[Misc]"`)
+  and it runs with the rest of that file's tests. A new *tag* has to be added to the list in
+  `MgDev\Server\src\UnitTesting\UnitTesting.cpp` (which is what `mgserver test all` and
+  `mgserver test list` enumerate) **and** to the `$TestTable` in `Run-MgTests.ps1`, or `-Test All`
+  will not run it.
+- There is no automated suite for the web tier, the bindings, mg-portable, Fusion or the installer.
+  A change there is validated by building it and exercising it by hand; `MgDev\UnitTest\run_web_tests.bat`
+  and the Nightwatch acceptance tests under `MgDev\UnitTest\Acceptance` need a configured installation
+  and, for the mapagent suite, node.js.
+
+| Scope | Test source file | Covers |
+|---|---|---|
+| `CoordinateSystem` | `TestCoordinateSystem.cpp` | `Common\CoordinateSystem` |
+| `DrawingService` | `TestDrawingService.cpp` | `Server\Services\Drawing` |
+| `FeatureService` | `TestFeatureService.cpp` | `Server\Services\Feature` |
+| `Geometry` | `TestGeometry.cpp` | `Common\Geometry` |
+| `KmlService` | `TestKmlService.cpp` | `Server\Services\Kml` |
+| `LogManager` | `TestLogManager.cpp` | `Server\Common\LogManager` |
+| `MappingService` | `TestMappingService.cpp` | `Server\Services\Mapping` |
+| `MdfModel` | `TestMdfModel.cpp` | `Common\MdfModel`, `Common\MdfParser` |
+| `Misc` | `TestMisc.cpp` | `Common` (misc), `Server\Services\Resource`, `Server\Services\Site` |
+| `Performance` | `TestPerformance.cpp` | server performance checks |
+| `RenderingService` | `TestRenderingService.cpp` | `Server\Services\Rendering` |
+| `RasterStylization` | `TestRasterStylization.cpp` | `Server\Renderers` (raster) |
+| `ResourceService` | `TestResourceService.cpp` | `Server\Services\Resource` |
+| `ServerAdminService` | `TestServerAdminService.cpp` | `Server\Services\ServerAdmin` |
+| `ServerManager` | `TestServerManager.cpp` | `Server\Core\ServerManager` |
+| `ServiceManager` | `TestServiceManager.cpp` | `Server\Core\ServiceManager` |
+| `SiteManager` | `TestSiteManager.cpp` | `Server\Core\SiteManager` |
+| `SiteService` | `TestSiteService.cpp` | `Server\Services\Site` |
+| `Stylization` | `TestStylization.cpp` | `Server\Renderers` (vector stylization helpers) |
+| `TileService` | `TestTileService.cpp` | `Server\Services\Tile` |
+| `ProfilingService` | `TestProfilingService.cpp` | `Server\Services\Profiling` |
+| `TransformMesh` | `TestTransformMesh.cpp` | `Common\Geometry` (transform mesh) |
+
+`Performance` also appears as a tag *inside* `TestRenderingService.cpp`, so running the
+`Performance` scope verifies both files' performance-tagged cases.
+
 ## Memory management
 
 FDO and MapGuide both use intrusive reference counting with custom smart pointers, and both hide their
@@ -212,6 +315,17 @@ that passes says nothing about either. In short:
 - `FdoPtr(T*)` **attaches** — it takes over the reference you hand it and does not AddRef. The copy
   constructor and copy-assignment *do* AddRef. So `FdoPtr<T> x = obj->GetX();` is correct (the getter's
   reference is taken over), while `FdoPtr<T> x = obj->GetX(); FDO_SAFE_ADDREF(x.p);` leaks.
+- **A borrow stored into another `FdoPtr` is a use-after-free, not a leak.** Assignment from a pointer
+  *taken out of* another `FdoPtr` — `.p`, a `dynamic_cast` of it, a member reached through it — attaches
+  without AddRef, so the object dies with the `Ptr` it came from and the new holder dangles. It is silent
+  at the assignment and faults later, inside whatever destructor next releases the structure the object
+  belonged to. `FDO_SAFE_ADDREF` the borrow, or keep the owning `FdoPtr` alive. The over-retain in the
+  bullet above is the same rule read the other way.
+- Releasing, or walking, a structure whose depth grows with its content takes an explicit worklist, not
+  the recursive destructor or a recursive `Process`: a filter tree holds one node per term, so a
+  selection of a few thousand features is a few thousand frames. `GetRefCount() == 1` is the test for
+  "nothing else owns this child", and it is what makes detaching and deleting it flat safe; release
+  anything shared normally.
 - Every `Create()`, every `Get*`/`Find*` and `SmartCast<T>()` hands back a reference **you** own:
   `GetItem`, `FindItem`, `GetExtent`, `GetGeometry`, `GetGeometryProperty`, `GetClasses`,
   `GetCharacterSet`, `GetPhysicalSchema`, `GetManager`, `CreateSchemaManager`,
@@ -461,11 +575,29 @@ An explicit instruction in the task overrides the line for that task only; say w
 
 - **Script-only changes** — run the change end to end at least once (build or test the smallest thing
   that exercises it) and check `git status` for files the scripts wrote outside the gitignored paths.
-- **Source-tree changes (FDO or `MgDev`)** — build the affected tree (`fdo_rel.bat -ntp -w=<component>`
-  for a provider, or the relevant MapGuide configuration) and run the affected suite with
-  `.\Run-FdoTests.ps1 -Test <suite>` — or, while iterating, a single fixture with
-  `-Fixture <registry>` — in the matching configuration. Report the suite's result
+- **FDO source-tree changes** — build the affected tree (`fdo_rel.bat -ntp -w=<component>` for a
+  provider) and run the affected suite with `.\Run-FdoTests.ps1 -Test <suite>` — or, while iterating, a
+  single fixture with `-Fixture <registry>` — in the matching configuration. Report the suite's result
   (`OK (n)`) rather than just "it built".
+- **MapGuide source-tree changes (`MgDev`)** — the loop is the same shape:
+  `mapguide_rel.bat -w=server` (or `mapguide_dbg.bat -w=server`), then
+  `.\Run-MgTests.ps1 -Test <scope>`, where the scope is the one whose test source file covers the
+  changed code ([Test MapGuide](#test-mapguide) has the scope-to-source mapping; `-List` prints it
+  too). Report the scope's result (`OK (n test cases)`) rather than just "it built". Re-run
+  `mapguide_rel_setup.bat` first if the change is in FDO or the FDO SDK was rebuilt, because it is
+  what stages `MgDev\Oem\FDO`.
+  - A change in a file that no scope covers — the web tier, the bindings, mg-portable, Fusion, the
+    installer — has no automated suite here: say which component you built and what you exercised by
+    hand instead of implying a test ran.
+  - A change that adds or edits a test is validated the same way, and the test has to be running:
+    check the scope's reported case count moved (or that `Starting test case: <name>` appears in
+    `testlogs\MgRel64_<Scope>.txt`). A test binary that predates the file reports the scope and runs
+    nothing, which the runner fails rather than passes; it also warns when `MgUnitTesting.dll` is
+    older than the newest test source, so rebuild before believing a green result.
+  - MapGuide test code follows the same ownership rules as product code (see
+    [Memory management](#memory-management) and [CPP_STYLE.md](./CPP_STYLE.md)); there is no CRT leak
+    check wired into this suite, so read the diff for the `Ptr<T>` shapes rather than expecting a
+    report.
 - **Release vs Debug** — a Debug pass does not validate the Release build, and here it is weaker
   still: Debug and Release also differ in CRT flavor and `_ITERATOR_DEBUG_LEVEL`, so the two are
   different runtimes, not the same runtime at different speed. Optimization also removes the NULL-`this`
@@ -504,6 +636,27 @@ An explicit instruction in the task overrides the line for that task only; say w
 
 - Debug and Release MapGuide builds cannot be made simultaneously; build them one at a time, and
   re-run `mapguide_*_setup.bat` after every FDO build.
+- The MapGuide server suite is not green on an unmodified tree here. Two scopes fail, and both are
+  independent of each other:
+  - `LogManager` — `EnumerateLogs` (`TestLogManager.cpp:152`, `REQUIRE(logs->Contains(junkNameProp))`)
+    and `RenameLog` (`:228`) fail, so the scope ends `test cases: 43 | 41 passed | 2 failed`. It
+    reproduces after emptying the server's `Logs` directory and before and after a rebuild, so it is a
+    real failure of the code under test rather than leftover state; the cause has not been established.
+  - `RasterStylization` — 4 assertions in `Raster grid styling` (`TestRasterStylization.cpp:529`)
+    fail. Those tests arrived with the raster-stylization baseline work in r10225, so treat a movement
+    in this count as meaningful and the count itself as the current baseline.
+  `.\Run-MgTests.ps1 -Test All` therefore exits 1 today; compare scope by scope, not against a
+  green/red total.
+- A scope that reports `No tests ran` while `mgserver test list` names it means the test binary is
+  older than the test source. Rebuild the server; `Run-MgTests.ps1` reports that case as `FAILED`
+  rather than as a pass.
+- A full `mapguide_*` build mutates a tracked file: the installer preparation step writes
+  `PackageReference` entries into `MgDev\Bindings\src\Managed\DotNet\MapViewerStub\MapViewerStub.csproj`,
+  so `svn status` in `MgDev` is dirty afterwards and must not be mistaken for a source change. `-w=server`
+  skips that step and leaves the working copy alone.
+- `Run-MgTests.ps1` cannot select a single test case or filter by tag: a scope is a Catch2 tag and the
+  server prepares a suite's data from the bare scope name, so any tag expression runs the tests without
+  their data (see [Test MapGuide](#test-mapguide)).
 - WFS and WMS suites query live public servers and fail for environmental reasons.
 - The ODBC sub-suites need their `*Init.txt` files to be correct for the machine, and the Oracle,
   MySQL and PostGIS suites need `fdo_rdbms_thirdparty` populated and the matching environment

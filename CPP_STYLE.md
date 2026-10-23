@@ -52,6 +52,9 @@ libraries — those have their own (or no) ownership model.
 - `FdoPtr`'s copy constructor and copy-assignment **do** add a reference (shared ownership).
 - FDO getters and collections (`GetX()`, `GetItem`, `FindItem`, `Add`) **return addref'd
   pointers** — the caller owns the returned reference.
+- `FdoIDisposable::GetRefCount()` — and the count `AddRef()` / `Release()` return — is the only way to
+  tell whether you are the sole owner of an object, which is what decides whether a child may be
+  detached and deleted rather than released.
 
 Consequences:
 
@@ -61,6 +64,18 @@ Consequences:
 - `return FDO_SAFE_ADDREF(m_X.p);` — correct: hands an owned reference to the caller.
 - `FdoPtr<T> x = obj->GetX(); FDO_SAFE_ADDREF(x.p);` — **wrong**: over-retains (leaks), since
   `x` already owns the reference the getter returned.
+- `FdoIdentifier* idf = dynamic_cast<FdoIdentifier*>(left.p); other = idf;` — **wrong**: the assignment
+  attaches, so the object still has only the single reference `left` holds, and it dies with `left`.
+  This is a **use-after-free**, the mirror image of the over-retain above, and it is silent where it is
+  written: the fault arrives later, inside whatever destructor next releases the structure the object
+  belonged to (a filter tree, a collection), so the crashing stack names the teardown rather than the
+  borrow. Anything read out of an `FdoPtr` — `.p`, a `dynamic_cast` / `static_cast` of it, a member
+  reached through it — is a *borrow*, not an owned reference: `FDO_SAFE_ADDREF` it before storing it
+  anywhere that outlives that `FdoPtr`, or keep the `FdoPtr` alive for as long as the borrow is used.
+- Releasing or walking a structure whose depth grows with its content needs an explicit worklist rather
+  than the recursive destructor (or a recursive `Process`): a filter tree carries one node per term, so
+  a selection of a few thousand features is a few thousand stack frames. Detach and delete a child only
+  when `GetRefCount() == 1`; release anything shared normally, as its other owners expect.
 - `catch (FdoException*) { }` (or a nameless `catch (...)`) — **wrong**: the caught exception and its
   message buffer are leaked. Name the exception, assert on it, then release it.
 - `coll->Add(FdoX::Create(...))` — **wrong**: `Add()` AddRefs its argument, so it does not consume

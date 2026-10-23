@@ -400,6 +400,56 @@ command-line run.
 The test-host change lives in the gitignored FDO SVN tree, so it is also kept as a patch at
 [fdo-crt-leak-check.patch](./fdo-crt-leak-check.patch).
 
+## Running the MapGuide server test suite (`Run-MgTests.ps1`)
+
+The MapGuide tests are not separate executables. They are the `MgUnitTesting.dll` module that
+`mgserver.exe` loads through its own `test` command, so a run costs one server start and stop and
+nothing has to be installed, configured or left running:
+
+```
+mgserver.exe test <scope>
+```
+
+`Run-MgTests.ps1` wraps that for the build output here, in the same shape as `Run-FdoTests.ps1`:
+
+```powershell
+.\Run-MgTests.ps1 -List                          # scopes, with the test source file each covers
+.\Run-MgTests.ps1 -Test Misc                     # one scope, Release tree
+.\Run-MgTests.ps1 -Configuration Debug -Test FeatureService
+.\Run-MgTests.ps1 -Test Geometry, MdfModel
+```
+
+* `-Configuration` selects `MgDev\Server\bin\Release64` (default) or `Debug64`; `-Test` takes the
+  Catch2 tag the suite registers (`All` runs every scope); `-List` prints the scope-to-source mapping
+  without running anything. A Debug run first needs the Debug FDO SDK: `fdo_dbg.bat`, then
+  `mapguide_dbg_setup.bat` (which copies `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO`). With only the
+  Release FDO staged, a Debug scope reports `SKIPPED`.
+* Output is streamed and tee'd to `testlogs\MgRel64_<Scope>.txt` / `testlogs\MgDbg64_<Scope>.txt`. The
+  script exits non-zero if any scope failed, reports `SKIPPED` when the executable or the staged test
+  data is missing, and reports a scope that ran no test cases as `FAILED` — a stale `MgUnitTesting.dll`
+  advertises scopes in `mgserver test list` and then matches none of them.
+* The test data is staged to `MgDev\Server\bin\UnitTestFiles` by the server build's PostBuild step. The
+  suites read it as `../UnitTestFiles`, which is why the runner works from the build output.
+* A MapGuide server must not already be running: the tests start and stop their own, and the runner
+  refuses to start (`exit 2`) rather than failing every suite for the wrong reason.
+
+The inner loop for a server change is `mapguide_rel.bat -w=server` (only the server tree, no web tier,
+bindings, docs or installer preparation) followed by the scope whose test source covers the change.
+Steady-state cost on this machine: the `-w=server` build is about a minute, `Geometry` 1 s, `Misc` 6 s,
+`RenderingService` 25 s, `FeatureService` 74 s, `CoordinateSystem` 59 s, `TileService` 84 s, and all 22
+scopes about 5 min. `-List` names the source file each scope covers.
+
+Unlike the FDO runner there is no `-Fixture`: a scope is a tag registered by one file, so that file is
+the finest granularity, and the scope must be passed bare. `mgserver` brackets whatever it is given and
+`TestServiceFactory::IsRunningSuite()` matches the unbracketed name when it prepares that suite's data,
+so a Catch2 tag expression such as `Misc]~[SlowTests` — which parses, and which looks like a way to skip
+the slow coordinate-system tests — runs the tests with none of their data prepared and fails them for the
+wrong reason.
+
+`MgDev\UnitTest\run_server_tests.bat` is a different thing and is not used by this loop: it copies the
+test data next to a *configured installation* and starts it, which is what the web-tier and mapagent
+suites under `MgDev\UnitTest\` need.
+
 ## Steps (tldr, powershell)
 
 ```powershell
@@ -427,6 +477,12 @@ If you are an agent working in this repository, read these before changing code:
  * [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md) — the leak catalogue: the shapes FDO leaks
    take, how to read a leak report, how to attribute one to a test, and which cycles are knowingly
    left alone
+ * [docs/mapguide-php-decoupling.md](./docs/mapguide-php-decoupling.md) — how the web tier is wired to
+   its bundled PHP 8.3/httpd 2.4, how to disable PHP on an existing httpd or IIS install, and what a
+   bring-your-own PHP/httpd deployment needs
+ * [docs/mapguide-aspnet-core-replacement.md](./docs/mapguide-aspnet-core-replacement.md) — whether one
+   ASP.NET Core application can replace `mapadmin`, `schemareport`, the PHP viewer and Fusion, and what
+   hosting looks like on IIS versus httpd
 
 ## Generating download table
 
