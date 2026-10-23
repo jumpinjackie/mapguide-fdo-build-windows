@@ -351,13 +351,15 @@ patch at [fdo-odbc-access-suite.patch](./fdo-odbc-access-suite.patch).
 
 ## Leak checking an FDO suite from the command line (`FDO_CRT_LEAK_CHECK`)
 
-The Debug suites link the debug CRT, and the cppunit test host that the GenericRdbms suites use
-(`Thirdparty\cppunit\HostApp\TestMain.cpp` — the `main` of `UnitTestSQLServerSpatial.exe`,
-`UnitTestPostGIS.exe`, `UnitTestMySQL.exe` and the ODBC ones) already turns the CRT's leak check on
+The Debug suites link the debug CRT, and most of them take their `main` from the cppunit test host
+(`Thirdparty\cppunit\HostApp\TestMain.cpp` — used by FdoCore, SDF, SHP, SQLite, OGR, WFS, WMS,
+KingOracle, ArcSDE and the GenericRdbms suites: `UnitTestSQLServerSpatial.exe`, `UnitTestPostGIS.exe`,
+`UnitTestMySQL.exe` and the ODBC ones), which already turns the CRT's leak check on
 with `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)`. By default that report is
 written to the *debugger's* output, which a plain command-line run discards. Set
 `FDO_CRT_LEAK_CHECK=1` to send it to stderr instead, so it appears in the console output and in the
-log the runner tees:
+log the runner tees. The GDAL suite has its own `main`, which sets the flag but has no stderr gate, so
+this variable does nothing for it and its report is debugger-only:
 
 ```powershell
 $env:FDO_CRT_LEAK_CHECK="1"
@@ -432,9 +434,15 @@ mgserver.exe test <scope>
   suites read it as `../UnitTestFiles`, which is why the runner works from the build output.
 * A MapGuide server must not already be running: the tests start and stop their own, and the runner
   refuses to start (`exit 2`) rather than failing every suite for the wrong reason.
+* These logs are a leak probe only in Debug, and only with `MG_CRT_LEAK_CHECK=1` (see below): without
+  it the CRT writes its leak report to the debugger's output, so nothing leak-related appears here.
+  Release has no debug heap at all.
 
-The inner loop for a server change is `mapguide_rel.bat -w=server` (only the server tree, no web tier,
-bindings, docs or installer preparation) followed by the scope whose test source covers the change.
+The inner loop for a server change is `mapguide_rel.bat -w=server` (the server solution, no web tier,
+bindings, docs or installer preparation) followed by the scope whose test source covers the change. It
+builds the server tree only, so it assumes the OEM libraries (ACE, Xerces, dbxml, CS-Map) for that
+configuration already exist — a full build makes them, and after a fresh checkout each configuration
+needs `mapguide_*.bat -w=oem` once before the first `-w=server`.
 Steady-state cost on this machine: the `-w=server` build is about a minute, `Geometry` 1 s, `Misc` 6 s,
 `RenderingService` 25 s, `FeatureService` 74 s, `CoordinateSystem` 59 s, `TileService` 84 s, and all 22
 scopes about 5 min. `-List` names the source file each scope covers.
@@ -449,6 +457,41 @@ wrong reason.
 `MgDev\UnitTest\run_server_tests.bat` is a different thing and is not used by this loop: it copies the
 test data next to a *configured installation* and starts it, which is what the web-tier and mapagent
 suites under `MgDev\UnitTest\` need.
+
+### Leak checking a MapGuide scope from the command line (`MG_CRT_LEAK_CHECK`)
+
+The Debug `mgserver` sets the CRT's leak check at startup, but the report is written to the
+*debugger's* output, which a plain command-line run discards. Set `MG_CRT_LEAK_CHECK=1` and
+`Server\src\Core\main.cpp` sends it to stderr instead, so it lands at the end of the scope's tee'd log:
+
+```powershell
+$env:MG_CRT_LEAK_CHECK="1"
+.\Run-MgTests.ps1 -Configuration Debug -Test Misc          # ~15 s
+Select-String -Path testlogs\MgDbg64_Misc.txt -Pattern 'Detected memory leaks' -Context 0,40
+Remove-Item Env:\MG_CRT_LEAK_CHECK
+```
+
+The report is the CRT's own, in the same shape as the FDO one: `{block} normal block at 0x…, N bytes
+long`, ending with `Object dump complete.`. Two things to know:
+
+* **Only Debug reports anything.** The Release CRT has no debug heap, so the variable there produces
+  no report even when the code leaks.
+* **Expect noise, and compare sets rather than totals.** On an unmodified tree `Misc` reports 4 blocks
+  (8,266 bytes) and `KmlService` 3 blocks (8,250 bytes) — most of that is one ~8.2 KB block of
+  process-lifetime state. Because each scope is its own process, a scope's dump belongs to that scope;
+  run the scope before and after the change, and require the record set to shrink without new records
+  appearing.
+
+This needs a Debug tree, which in turn needs the Debug FDO SDK (`fdo_dbg.bat`, `mapguide_dbg_setup.bat`)
+and the Debug OEM libraries once (`mapguide_dbg.bat -w=oem`) before `mapguide_dbg.bat -w=server`.
+`mapguide_rel_setup.bat` restores the Release staging afterwards, and the two configurations cannot be
+built at the same time.
+
+The `MG_CRT_LEAK_CHECK` gate landed upstream as r10226. The one remaining `MgDev` edit this repository
+needs — narrowing `Band.h`/`GridData.h` so the r10225 stylization tests do not pull the FDO expression
+engine through `Stylization.h` — is uncommitted in the working copy and also kept as
+[mg-stylization-includes.patch](./mg-stylization-includes.patch), because `MgDev` is gitignored and the
+working-copy change is invisible to git.
 
 ## Steps (tldr, powershell)
 

@@ -182,7 +182,16 @@ mapguide_rel.bat -w=server      REM just the server tree, which the tests exerci
 `-w=server` is the MapGuide counterpart of `fdo_rel.bat -ntp -w=<component>`: it is the whole
 edit/build/test loop for server code, and it is what makes that loop short — about a minute when
 incremental, against the full build that also builds and installs the web tier, the bindings,
-mg-portable, the documentation and the installer.
+mg-portable, the documentation and the installer. What `-w=server` does **not** do is build the OEM
+libraries (ACE, Xerces, dbxml, CS-Map): that is the `-w=oem` selection, and the tree's `build.bat`
+goes straight to the server solution for `server`. A full build (the default) builds OEM first, which
+is why `-w=server` works on a tree that has been fully built; after a fresh checkout, or for the other
+configuration, build the OEM libraries for that configuration once first:
+
+```
+mapguide_dbg.bat -w=oem         REM once per configuration: ACE/Xerces/dbxml in Debug, CS-Map
+mapguide_dbg.bat -w=server      REM then the per-change loop
+```
 
 ### Test
 
@@ -244,7 +253,9 @@ as environmental until proven otherwise.
 - A Debug run needs the Debug FDO SDK staged first, because `mapguide_dbg_setup.bat` copies
   `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO` and that tree does not exist until `fdo_dbg.bat` has been
   run. With only the Release FDO staged, `-Configuration Debug` reports `SKIPPED`, which is the
-  intended signal rather than a failure.
+  intended signal rather than a failure. A Debug tree that has never been built also needs its OEM
+  libraries first (`mapguide_dbg.bat -w=oem`), or the server solution fails to link `ACEd.lib` and
+  `xerces-c_3mgD.lib`.
 - Each scope's output is streamed and tee'd to `testlogs\MgRel64_<Scope>.txt` /
   `testlogs\MgDbg64_<Scope>.txt`. The script exits non-zero if any scope failed and reports `SKIPPED`
   when the executable or the staged test data is missing — a skipped scope is a build that has not
@@ -386,26 +397,55 @@ A Debug build is required for all of these; a Release run will not report anythi
 2. **CRT debug heap.** The Debug configurations link `MultiThreadedDebugDLL` (the debug CRT, `/MDd`
    — see `Utilities\Common\FdoCommon.vcxproj`), so the CRT's own leak check is available. With
    `_CRTDBG_MAP_ALLOC` defined before `<crtdbg.h>` and
-   `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)` set in the suite's `main` — each
-   suite has its own, e.g. `Providers\SQLite\Src\UnitTest\UnitTest.cpp` — the Debug CRT dumps every
-   block still allocated at exit, with the `new` site's file and line. Expect noise: deliberately-live
-   global and singleton state appears in that dump, so compare against a run of the *unmodified* tree
-   and only chase the difference. `_CrtMemCheckpoint` / `_CrtMemDifference` around a single test
-   pinpoints what that test allocates and keeps, which is the precise version of the same idea.
+   `_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF)` set in the suite's `main` — most
+   suites get that `main` from the cppunit test host
+   `Thirdparty\cppunit\HostApp\TestMain.cpp`, and the GDAL suite has its own
+   (`Providers\GDAL\Src\UnitTest\UnitTest.cpp`) — the Debug CRT dumps every block still allocated at
+   exit, with the `new` site's file and line when the allocating translation unit defines it. Expect
+   noise: deliberately-live global and singleton state appears in that dump, so compare against a run
+   of the *unmodified* tree and only chase the difference. `_CrtMemCheckpoint` / `_CrtMemDifference`
+   around a single test pinpoints what that test allocates and keeps, which is the precise version of
+   the same idea.
 
-   The GenericRdbms suites (`UnitTestSQLServerSpatial.exe`, `UnitTestPostGIS.exe`, `UnitTestMySQL.exe`,
-   the ODBC ones) get their `main` from the cppunit test host
-   `Thirdparty\cppunit\HostApp\TestMain.cpp`, which already sets that flag — but the CRT writes the
-   report to the *debugger's* output, so a plain command-line run shows nothing. With
-   `FDO_CRT_LEAK_CHECK=1` in the environment it is written to stderr instead and therefore lands in
-   the run's console output and in `testlogs\<Log>`; the report gives block counts and sizes rather
-   than file/line for code inside the provider DLLs, so identify those by size
-   (`sizeof(<type>)`) and use the refcount instrumentation below when you need to know *who* holds
-   the object. `_CRTDBG_MAP_ALLOC` names a file and line only for translation units that define it,
-   and an allocation hook installed in the test host fires for that module's debug-allocator calls
-   and not the provider's — adding the mapping to the suspect provider TU is what gets that TU
-   named. MSVC has no LeakSanitizer, so there is no ASan-style alternative on Windows. See
+   The host provides `main` for FdoCore, SDF, SHP, SQLite, OGR, WFS, WMS, KingOracle, ArcSDE and the
+   GenericRdbms suites (`UnitTestSQLServerSpatial.exe`, `UnitTestPostGIS.exe`, `UnitTestMySQL.exe`,
+   the ODBC ones), and it already sets that flag — but the CRT writes the report to the *debugger's*
+   output, so a plain command-line run shows nothing. With `FDO_CRT_LEAK_CHECK=1` in the environment
+   the host redirects it to stderr instead, where it lands in the run's console output and in
+   `testlogs\<Log>`; the report gives block counts and sizes rather than file/line for code inside the
+   provider DLLs, so identify those by size (`sizeof(<type>)`) and use the refcount instrumentation
+   below when you need to know *who* holds the object. The GDAL suite's own `main` sets the flag but
+   has no such gate, so `FDO_CRT_LEAK_CHECK=1` does nothing for it and its dump is debugger-only.
+   `_CRTDBG_MAP_ALLOC` names a file and line only for translation units that define it, and an
+   allocation hook installed in the test host fires for that module's debug-allocator calls and not the
+   provider's — adding the mapping to the suspect provider TU is what gets that TU named. MSVC has no
+   LeakSanitizer, so there is no ASan-style alternative on Windows. See
    [README.md](./README.md#leak-checking-an-fdo-suite-from-the-command-line-fdo_crt_leak_check).
+
+   MapGuide works the same way, through its own gate: `mgserver`'s `main`
+   (`Server\src\Core\main.cpp`) sets `_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF`, and the Debug
+   configurations link `MultiThreadedDebugDLL` (`Server\src\Core\ServerCore.vcxproj`,
+   `Server\src\UnitTesting\UnitTesting.vcxproj`), so `mgserver test <scope>` checks the debug heap at
+   exit. The flag lives in the debug CRT DLL, so it is process-wide and the dump covers the test module
+   and the server DLLs, not just the executable. Nothing in the Server tree redirects the report and
+   MapGuide does not define `CATCH_CONFIG_WINDOWS_CRTDBG` (Catch2's own detector), so by default it goes
+   to the debugger's output and a plain run shows nothing. With `MG_CRT_LEAK_CHECK=1` in the
+   environment `main` sends it to stderr instead, where the runner's tee puts it at the end of
+   `testlogs\MgDbg64_<Scope>.txt`:
+
+   ```powershell
+   $env:MG_CRT_LEAK_CHECK="1"
+   .\Run-MgTests.ps1 -Configuration Debug -Test Misc
+   Select-String -Path testlogs\MgDbg64_Misc.txt -Pattern 'Detected memory leaks' -Context 0,40
+   ```
+
+   Only Debug reports anything — the Release CRT has no debug heap, so the same variable there yields
+   nothing. Each scope is its own process, so a run attributes its leaks to that scope rather than to a
+   mixture of suites, but the dump still carries deliberately-live state: `Misc` and `KmlService` each
+   report a handful of blocks (~8 KB, one of them ~8.2 KB) on an unmodified tree, so compare against a
+   run without your change instead of expecting an empty report. `_CRTDBG_MAP_ALLOC` is defined in
+   `main.cpp` and in `Common\MdfModel\stdafx.h` / `Common\MdfParser\stdafx.h`, so blocks allocated from
+   those translation units carry a file and line; the rest give size and data only.
 3. **Visual Studio's Memory Usage tool** (Debug, native heap snapshots) or **Application Verifier**
    (Basics → Leak) for a second, independent view; **Dr. Memory** (`drmemory -- <exe>`) works for
    runs that cannot use the debug heap.
@@ -595,9 +635,12 @@ An explicit instruction in the task overrides the line for that task only; say w
     nothing, which the runner fails rather than passes; it also warns when `MgUnitTesting.dll` is
     older than the newest test source, so rebuild before believing a green result.
   - MapGuide test code follows the same ownership rules as product code (see
-    [Memory management](#memory-management) and [CPP_STYLE.md](./CPP_STYLE.md)); there is no CRT leak
-    check wired into this suite, so read the diff for the `Ptr<T>` shapes rather than expecting a
-    report.
+    [Memory management](#memory-management) and [CPP_STYLE.md](./CPP_STYLE.md)), and the debug heap
+    check is available: run the scope in Debug with `$env:MG_CRT_LEAK_CHECK="1"` and the CRT dump
+    lands at the end of `testlogs\MgDbg64_<Scope>.txt`
+    ([Finding a leak on Windows](#finding-a-leak-on-windows)). Compare its block set against a run of
+    the same scope without your test — `Misc` and `KmlService` already report a handful of blocks — and
+    read the diff for the `Ptr<T>` shapes as well.
 - **Release vs Debug** — a Debug pass does not validate the Release build, and here it is weaker
   still: Debug and Release also differ in CRT flavor and `_ITERATOR_DEBUG_LEVEL`, so the two are
   different runtimes, not the same runtime at different speed. Optimization also removes the NULL-`this`
