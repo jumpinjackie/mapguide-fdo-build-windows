@@ -409,8 +409,12 @@ The MapGuide tests are not separate executables. They are the `MgUnitTesting.dll
 nothing has to be installed, configured or left running:
 
 ```
-mgserver.exe test <scope>
+mgserver.exe test <scope>[,<scope>...]
 ```
+
+`<scope>` is one Catch2 tag, or a comma- or semicolon-delimited list of tags (whitespace is accepted
+too). Every named scope runs in the same server process, so a list costs one start and stop rather
+than one per scope.
 
 `Run-MgTests.ps1` wraps that for the build output here, in the same shape as `Run-FdoTests.ps1`:
 
@@ -418,7 +422,8 @@ mgserver.exe test <scope>
 .\Run-MgTests.ps1 -List                          # scopes, with the test source file each covers
 .\Run-MgTests.ps1 -Test Misc                     # one scope, Release tree
 .\Run-MgTests.ps1 -Configuration Debug -Test FeatureService
-.\Run-MgTests.ps1 -Test Geometry, MdfModel
+.\Run-MgTests.ps1 -Test Geometry, MdfModel       # both scopes, one server process
+.\Run-MgTests.ps1 -PerScope -Test Geometry, MdfModel   # one server process per scope
 ```
 
 * `-Configuration` selects `MgDev\Server\bin\Release64` (default) or `Debug64`; `-Test` takes the
@@ -426,17 +431,23 @@ mgserver.exe test <scope>
   without running anything. A Debug run first needs the Debug FDO SDK: `fdo_dbg.bat`, then
   `mapguide_dbg_setup.bat` (which copies `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO`). With only the
   Release FDO staged, a Debug scope reports `SKIPPED`.
-* Output is streamed and tee'd to `testlogs\MgRel64_<Scope>.txt` / `testlogs\MgDbg64_<Scope>.txt`. The
-  script exits non-zero if any scope failed, reports `SKIPPED` when the executable or the staged test
-  data is missing, and reports a scope that ran no test cases as `FAILED` — a stale `MgUnitTesting.dll`
-  advertises scopes in `mgserver test list` and then matches none of them.
+* By default all selected scopes are passed to one `mgserver` run (`test a,b,...`), so a multi-scope
+  run starts the server once. `-PerScope` restores the previous behavior of one process per scope,
+  which is what to use when a per-scope verdict or log is needed.
+* Output is streamed and tee'd to `testlogs\MgRel64_<Scope>.txt` / `testlogs\MgDbg64_<Scope>.txt` for
+  a single scope, `..._All.txt` for every scope, and `..._<First>_and_<N-1>_more.txt` for a subset.
+  With `-PerScope` each scope keeps its own `..._<Scope>.txt`. The script exits non-zero if the run
+  failed, reports `SKIPPED` when the executable or the staged test data is missing, and reports a run
+  that executed no test cases as `FAILED` — a stale `MgUnitTesting.dll` advertises scopes in
+  `mgserver test list` and then matches none of them.
 * The test data is staged to `MgDev\Server\bin\UnitTestFiles` by the server build's PostBuild step. The
   suites read it as `../UnitTestFiles`, which is why the runner works from the build output.
 * A MapGuide server must not already be running: the tests start and stop their own, and the runner
   refuses to start (`exit 2`) rather than failing every suite for the wrong reason.
 * These logs are a leak probe only in Debug, and only with `MG_CRT_LEAK_CHECK=1` (see below): without
   it the CRT writes its leak report to the debugger's output, so nothing leak-related appears here.
-  Release has no debug heap at all.
+  Release has no debug heap at all. A batch run writes one log for the whole server process, so use
+  `-PerScope` when a leak report has to be attributed to a single scope.
 
 The inner loop for a server change is `mapguide_rel.bat -w=server` (the server solution, no web tier,
 bindings, docs or installer preparation) followed by the scope whose test source covers the change. It
@@ -448,11 +459,12 @@ Steady-state cost on this machine: the `-w=server` build is about a minute, `Geo
 scopes about 5 min. `-List` names the source file each scope covers.
 
 Unlike the FDO runner there is no `-Fixture`: a scope is a tag registered by one file, so that file is
-the finest granularity, and the scope must be passed bare. `mgserver` brackets whatever it is given and
+the finest granularity, and each scope name must be passed bare. `mgserver` splits a list on commas,
+semicolons and whitespace, brackets each name and passes the whole set as one Catch2 tag expression;
 `TestServiceFactory::IsRunningSuite()` matches the unbracketed name when it prepares that suite's data,
 so a Catch2 tag expression such as `Misc]~[SlowTests` — which parses, and which looks like a way to skip
-the slow coordinate-system tests — runs the tests with none of their data prepared and fails them for the
-wrong reason.
+the slow coordinate-system tests — is split into names that match nothing, runs the tests with none of
+their data prepared and fails them for the wrong reason.
 
 `MgDev\UnitTest\run_server_tests.bat` is a different thing and is not used by this loop: it copies the
 test data next to a *configured installation* and starts it, which is what the web-tier and mapagent

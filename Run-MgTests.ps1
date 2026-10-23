@@ -4,9 +4,14 @@
 
 .DESCRIPTION
     Runs the MapGuide server test module (MgUnitTesting.dll) through the
-    product's own entry point, "mgserver test <scope>", against the Debug or
-    Release build tree. The server starts and stops itself around the run, so
-    nothing has to be installed, configured or left running.
+    product's own entry point, "mgserver test <scope>[,<scope>...]", against
+    the Debug or Release build tree. The server starts and stops itself around
+    the run, so nothing has to be installed, configured or left running.
+
+    By default every requested scope is passed to a single mgserver process,
+    so a multi-scope run costs one server start and stop, not one per scope.
+    Use -PerScope to run each scope in its own process (and get a log and a
+    summary row per scope).
 
     Console output is streamed live and a copy is tee'd to a log file under
     the top-level 'testlogs' directory, next to the FDO suite logs.
@@ -34,6 +39,12 @@
     to one test source file under MgDev\Server\src\UnitTesting. -List prints
     the mapping, including which product code each one covers.
 
+.PARAMETER PerScope
+    Run each scope in its own mgserver process, as previous versions of this
+    script did. The default is one process for the whole selection, which is
+    cheaper; use this when a per-scope log or a per-scope pass/fail verdict is
+    wanted, for example while bisecting a failure.
+
 .PARAMETER List
     Print the available scopes (and the command each would run for the
     selected -Configuration) and exit without running anything.
@@ -51,14 +62,19 @@
     .\Run-MgTests.ps1 -Test Geometry, MdfModel
 
 .EXAMPLE
+    .\Run-MgTests.ps1 -PerScope -Test Geometry, MdfModel
+
+.EXAMPLE
     .\Run-MgTests.ps1 -List
 
 .NOTES
-    The scope must be the bare suite name. MgTestCommand brackets whatever it
-    is given ("[...]"), and the per-suite test-data setup matches the same
-    bare name, so passing a tag expression such as "Misc]~[SlowTests" (which
-    does parse as a Catch2 filter) runs the tests with none of their data
-    prepared and fails them for the wrong reason.
+    Each scope must be the bare suite name. The test module splits the
+    selection on commas, semicolons and whitespace, brackets each name
+    ("[...]") and hands the set to Catch2, and the per-suite test-data setup
+    matches the same bare name, so passing a tag expression such as
+    "Misc]~[SlowTests" (which does parse as a Catch2 filter) is split into
+    names that match nothing, runs the tests with none of their data prepared
+    and fails them for the wrong reason.
 #>
 [CmdletBinding()]
 param(
@@ -66,6 +82,8 @@ param(
     [string] $Configuration = 'Release',
 
     [string[]] $Test = @('All'),
+
+    [switch] $PerScope,
 
     [switch] $List
 )
@@ -117,11 +135,43 @@ function Get-CommandParts {
     $wd = Join-Path $BuildRoot $cfg.Bin
     return [pscustomobject]@{
         Name      = $Name
+        Label     = $Name
         WorkDir   = $wd
         Exe       = Join-Path $wd 'mgserver.exe'
         TestData  = Join-Path (Split-Path -Parent $wd) 'UnitTestFiles'
         Log       = Join-Path $LogRoot ('{0}_{1}.txt' -f $cfg.Prefix, $Name)
         Args      = @('test', $Name)
+    }
+}
+
+# One parts object for a selection of scopes, which one mgserver process
+# receives as a comma-delimited list.
+function Get-RunParts {
+    param([string[]] $Names)
+
+    if ($Names.Count -eq 1) {
+        $label = $Names[0]
+        $logName = $Names[0]
+    }
+    elseif ($Names.Count -eq $TestTable.Count) {
+        $label = "All ($($Names.Count) scopes)"
+        $logName = 'All'
+    }
+    else {
+        $label = $Names -join ', '
+        $logName = '{0}_and_{1}_more' -f $Names[0], ($Names.Count - 1)
+    }
+
+    $cfg = $ConfigMap[$Configuration]
+    $wd = Join-Path $BuildRoot $cfg.Bin
+    return [pscustomobject]@{
+        Name      = $Names -join ','
+        Label     = $label
+        WorkDir   = $wd
+        Exe       = Join-Path $wd 'mgserver.exe'
+        TestData  = Join-Path (Split-Path -Parent $wd) 'UnitTestFiles'
+        Log       = Join-Path $LogRoot ('{0}_{1}.txt' -f $cfg.Prefix, $logName)
+        Args      = @('test', ($Names -join ','))
     }
 }
 
@@ -195,38 +245,74 @@ $CatchSuccessRegex = 'All tests passed \((?<assertions>\d+) assertions? in (?<ca
 $CatchCaseRegex = '(?m)^\s*test cases:\s*(?<cases>\d+)\s*\|(?<rest>.*)$'
 $CatchFailedRegex = '(?m)^\s*(?:test cases|assertions):\s*\d+\s*\|.*?\b(?<n>[1-9]\d*) failed'
 
-function Invoke-SuiteChunk {
-    param([string] $Name)
+function Get-SkipReason {
+    param([pscustomobject] $Parts)
 
-    $parts = Get-CommandParts -Name $Name
+    if (-not (Test-Path -LiteralPath $Parts.WorkDir -PathType Container)) {
+        return "working directory not found: $($Parts.WorkDir)"
+    }
+    if (-not (Test-Path -LiteralPath $Parts.Exe -PathType Leaf)) {
+        return "executable not found: $($Parts.Exe) (build this $Configuration tree first)"
+    }
+    if (-not (Test-Path -LiteralPath $Parts.TestData -PathType Container)) {
+        return "test data directory not found: $($Parts.TestData) (rebuild the server so PostBuild stages MgDev\UnitTest\TestData)"
+    }
+    return $null
+}
 
-    if (-not (Test-Path -LiteralPath $parts.WorkDir -PathType Container)) {
-        Write-Warning "[$Name] SKIPPED: working directory not found: $($parts.WorkDir)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false; LogFailures = $false; Cases = 0 }
+function Get-CatchOutcome {
+    param([string] $LogPath, [int] $ExitCode)
+
+    $zeroTests = $false
+    $logFailures = $false
+    $cases = 0
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        $logText = Get-Content -LiteralPath $LogPath -Raw
+
+        $success = [regex]::Match($logText, $CatchSuccessRegex)
+        if ($success.Success) {
+            $cases = [int] $success.Groups['cases'].Value
+        }
+        else {
+            $caseInfo = [regex]::Match($logText, $CatchCaseRegex)
+            if ($caseInfo.Success) { $cases = [int] $caseInfo.Groups['cases'].Value }
+        }
+
+        $zeroTests = ($cases -eq 0)
+        $logFailures = ($ExitCode -eq 0) -and [regex]::IsMatch($logText, $CatchFailedRegex)
     }
-    if (-not (Test-Path -LiteralPath $parts.Exe -PathType Leaf)) {
-        Write-Warning "[$Name] SKIPPED: executable not found: $($parts.Exe) (build this $Configuration tree first)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false; LogFailures = $false; Cases = 0 }
+
+    return [pscustomobject]@{
+        Cases       = $cases
+        ZeroTests   = $zeroTests
+        LogFailures = $logFailures
     }
-    if (-not (Test-Path -LiteralPath $parts.TestData -PathType Container)) {
-        Write-Warning "[$Name] SKIPPED: test data directory not found: $($parts.TestData) (rebuild the server so PostBuild stages MgDev\UnitTest\TestData)"
-        return [pscustomobject]@{ Name = $Name; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false; LogFailures = $false; Cases = 0 }
+}
+
+function Invoke-TestRun {
+    param([pscustomobject] $Parts)
+
+    $label = $Parts.Label
+    $skipReason = Get-SkipReason -Parts $Parts
+    if ($skipReason) {
+        Write-Warning "[$label] SKIPPED: $skipReason"
+        return [pscustomobject]@{ Name = $label; ExitCode = $null; Skipped = $true; Duration = $null; ZeroTests = $false; LogFailures = $false; Cases = 0 }
     }
 
     Write-Host ''
-    Write-Host "=== $Name [$Configuration] ===" -ForegroundColor Cyan
-    Write-Host "  WorkDir : $($parts.WorkDir)"
-    Write-Host "  Command : $($parts.Exe) $($parts.Args -join ' ')"
-    Write-Host "  Log     : $($parts.Log)"
+    Write-Host "=== $label [$Configuration] ===" -ForegroundColor Cyan
+    Write-Host "  WorkDir : $($Parts.WorkDir)"
+    Write-Host "  Command : $($Parts.Exe) $($Parts.Args -join ' ')"
+    Write-Host "  Log     : $($Parts.Log)"
 
     # A previous run's log would otherwise still hold its failures when the
     # scan below reads the file.
-    Remove-Item -LiteralPath $parts.Log -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Parts.Log -Force -ErrorAction SilentlyContinue
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    Push-Location -LiteralPath $parts.WorkDir
+    Push-Location -LiteralPath $Parts.WorkDir
     try {
-        & $parts.Exe @($parts.Args) 2>&1 | Tee-Object -FilePath $parts.Log | Out-Host
+        & $Parts.Exe @($Parts.Args) 2>&1 | Tee-Object -FilePath $Parts.Log | Out-Host
         $code = $LASTEXITCODE
     }
     finally {
@@ -239,41 +325,29 @@ function Invoke-SuiteChunk {
     Write-Host "  Exit    : $code" -ForegroundColor $color
     Write-Host "  Elapsed : $(Format-Elapsed -Elapsed $duration)"
 
-    $zeroTests = $false
-    $logFailures = $false
-    $cases = 0
-    if (Test-Path -LiteralPath $parts.Log -PathType Leaf) {
-        $logText = Get-Content -LiteralPath $parts.Log -Raw
-
-        $success = [regex]::Match($logText, $CatchSuccessRegex)
-        if ($success.Success) {
-            $cases = [int] $success.Groups['cases'].Value
-        }
-        else {
-            $caseInfo = [regex]::Match($logText, $CatchCaseRegex)
-            if ($caseInfo.Success) { $cases = [int] $caseInfo.Groups['cases'].Value }
-        }
-
-        if ($cases -eq 0) {
-            $zeroTests = $true
-            Write-Warning "[$Name] the run reported no test cases, so nothing was actually verified."
-        }
-
-        if (($code -eq 0) -and [regex]::IsMatch($logText, $CatchFailedRegex)) {
-            $logFailures = $true
-            Write-Warning "[$Name] the log reports failing test cases but the executable exited 0."
-        }
+    $outcome = Get-CatchOutcome -LogPath $Parts.Log -ExitCode $code
+    if ($outcome.ZeroTests) {
+        Write-Warning "[$label] the run reported no test cases, so nothing was actually verified."
+    }
+    if ($outcome.LogFailures) {
+        Write-Warning "[$label] the log reports failing test cases but the executable exited 0."
     }
 
     return [pscustomobject]@{
-        Name        = $Name
+        Name        = $label
         ExitCode    = $code
         Skipped     = $false
         Duration    = $duration
-        ZeroTests   = $zeroTests
-        LogFailures = $logFailures
-        Cases       = $cases
+        ZeroTests   = $outcome.ZeroTests
+        LogFailures = $outcome.LogFailures
+        Cases       = $outcome.Cases
     }
+}
+
+function Invoke-SuiteChunk {
+    param([string] $Name)
+
+    return Invoke-TestRun -Parts (Get-CommandParts -Name $Name)
 }
 
 # --- Entry point -----------------------------------------------------------
@@ -288,6 +362,8 @@ if ($List) {
     Write-Host ''
     Write-Host "Pseudo-name: All (every scope). A scope is a Catch2 tag, so the finest"
     Write-Host "granularity is one test source file; tag expressions are not supported (see -Test)."
+    Write-Host "By default the selected scopes run in one mgserver process (test a,b,...);"
+    Write-Host "-PerScope runs each scope in its own process and log."
     return
 }
 
@@ -310,14 +386,20 @@ if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
     New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 }
 
-Write-Host "Running $($testsToRun.Count) scope(s) against $Configuration at:" -ForegroundColor Cyan
+$runMode = if ($PerScope) { 'separate processes' } else { 'one process' }
+Write-Host "Running $($testsToRun.Count) scope(s) in $runMode against $Configuration at:" -ForegroundColor Cyan
 Write-Host "  $(Join-Path $BuildRoot $ConfigMap[$Configuration].Bin)"
 
-Test-TestModuleAge -Parts (Get-CommandParts -Name ([string] $testsToRun[0]))
+Test-TestModuleAge -Parts (Get-RunParts -Names $testsToRun)
 
 $totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-$results = foreach ($name in $testsToRun) {
-    Invoke-SuiteChunk -Name $name
+$results = if ($PerScope) {
+    foreach ($name in $testsToRun) {
+        Invoke-SuiteChunk -Name $name
+    }
+}
+else {
+    Invoke-TestRun -Parts (Get-RunParts -Names $testsToRun)
 }
 $totalStopwatch.Stop()
 
