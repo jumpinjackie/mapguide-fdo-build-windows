@@ -187,9 +187,11 @@ echo     mapguide_rel.bat -w=server       Rebuild only the server tree
 echo     mapguide_rel.bat -w=allnodoc     Full build without the documentation
 echo     mapguide_rel.bat                 Full release build
 echo.
-echo Release and Debug cannot be built at the same time; build the
-echo configurations one at a time and re-run mapguide_rel_setup.bat after
-echo every FDO build.
+echo Release and Debug share this source tree: each configuration's FDO SDK is
+echo staged separately (Oem\FDO\Lib64\Debug64 or Lib64\Release64), so re-run
+echo mapguide_rel_setup.bat after every Release FDO build and leave the Debug
+echo staging in place. Build one configuration at a time: they share
+echo nuget.config and the packages cache.
 echo.
 exit /B 0
 

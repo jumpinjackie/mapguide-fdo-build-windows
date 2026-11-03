@@ -62,7 +62,16 @@ Drop the required files under `fdo_rdbms_thirdparty` as follows:
 
 ## Limitations
 
-Debug and Release builds of MapGuide cannot be made simultaneously. If you need both Debug and Release builds, you need to do it one at a time.
+Debug and Release can both be built from the same `MgDev` checkout, but not in the same build
+invocation: each configuration has its own FDO staging (`Oem\FDO\Lib64\Debug64` or `Lib64\Release64`,
+and `Oem\FDO\Bin\Debug64` or `Release64`) and its own output directories (`MgDev\Debug64` and
+`MgDev\Release64`, `mg-install\dbg64` and `mg-install\rel64`). Build the two wrappers one at a time,
+never concurrently: they share `MgDev\nuget.config` and the `MgDev\packages\Installed` NuGet cache.
+Re-running a setup script replaces only its own configuration's staging and leaves the other in place.
+The two FDO trees (`fdo-dbg`/`fdo-rel`) are likewise one configuration each. The `MgDev` project-file
+changes behind this are kept as [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch), and the
+installer's `FdoRegUtil` reference as
+[installer-dual-config-fdo-sdk.patch](./installer-dual-config-fdo-sdk.patch).
 
 ## SQL Server Spatial performance levers (`FDO_SQS_PERF`)
 
@@ -111,6 +120,44 @@ the schema-manager catalog reader's field lookups were made ownership-correct (s
 
 The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a
 patch at [fdo-sqs-perf.patch](./fdo-sqs-perf.patch) (apply with `svn patch` from `fdo-dbg`).
+
+## SQL Server ODBC driver selection
+
+The SQL Server Spatial provider chooses its ODBC driver from those registered with the ODBC driver
+manager, in this order:
+
+1. the Microsoft ODBC Driver for SQL Server, newest version first (`ODBC Driver 18 for SQL Server`
+   when it is installed, then 17, 13, 11);
+2. SQL Server Native Client, newest version first (`SQL Server Native Client 11.0`, then 10.0);
+3. the legacy `SQL Server` driver (`sqlsrv32.dll`).
+
+Only a driver that the driver manager lists is selected, so a driver DLL that is present on disk but
+not registered is not used. The provider's ODBC layer recognizes the Microsoft ODBC Driver through
+`SQLGetInfo(SQL_DRIVER_NAME)` (`msodbcsql18.dll`, ...) as well, so connections made with it still
+take the SQL Server paths in `Providers\GenericRdbms\Src\SQLServerSpatial\ODBCDriver`.
+
+The answer is resolved once per process and reused by every later connection, because a full
+`SQLDrivers()` enumeration is not free: measured with a `SQLAllocHandle`/`SQLDriversW`/`SQLFreeHandle`
+loop over the six drivers registered on this machine it costs about **1.9 ms**, against about
+**4.5 ms** for the five failing `LoadLibrary("SQLNCLI<version>.DLL")` probes it replaced, and about
+**0.7 ms** for a single successful `LoadLibrary` (which only happens when a Native Client is present
+and no Microsoft ODBC Driver is). The selection is therefore already cheaper per connection than the
+probe loop was, and memoizing removes the cost altogether. A driver installed after the first SQL
+Server connection is picked up when the process restarts.
+
+The generated connection string asks for `Encrypt=no;TrustServerCertificate=yes`. `Encrypt=no` keeps
+the transport SQL Server Native Client used: login packets are encrypted, the session is not. ODBC
+Driver 18 for SQL Server would otherwise encrypt by default, which measured ~15 us more per round
+trip (6%) on a loopback connection here. `TrustServerCertificate=yes` does not turn encryption on by
+itself - it only stops the driver validating the certificate when encryption happens - and it is
+what lets a server configured to force encryption accept its own self-signed certificate instead of
+failing with "The certificate chain was issued by an authority that is not trusted". Because it
+skips validation, it does not authenticate the server; a deployment that needs that can replace the
+attribute in `FdoRdbmsSqlServerConnection::GenConnectionStringParm()`.
+
+The provider and unit-test driver changes live in the gitignored FDO SVN tree, so they are also kept
+as a patch at [fdo-sqlserver-odbc-driver.patch](./fdo-sqlserver-odbc-driver.patch) (apply with
+`svn patch` from both `fdo-dbg` and `fdo-rel`).
 
 ## Batch parameter values / bulk insert for SQL Server Spatial (parked)
 
@@ -429,8 +476,8 @@ than one per scope.
 * `-Configuration` selects `MgDev\Server\bin\Release64` (default) or `Debug64`; `-Test` takes the
   Catch2 tag the suite registers (`All` runs every scope); `-List` prints the scope-to-source mapping
   without running anything. A Debug run first needs the Debug FDO SDK: `fdo_dbg.bat`, then
-  `mapguide_dbg_setup.bat` (which copies `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO`). With only the
-  Release FDO staged, a Debug scope reports `SKIPPED`.
+  `mapguide_dbg_setup.bat` (which stages `fdo-build\dbg64\Fdo` into the Debug folders under
+  `MgDev\Oem\FDO`). With the Debug FDO never staged, a Debug scope reports `SKIPPED`.
 * By default all selected scopes are passed to one `mgserver` run (`test a,b,...`), so a multi-scope
   run starts the server once. `-PerScope` restores the previous behavior of one process per scope,
   which is what to use when a per-scope verdict or log is needed.
@@ -496,8 +543,8 @@ long`, ending with `Object dump complete.`. Two things to know:
 
 This needs a Debug tree, which in turn needs the Debug FDO SDK (`fdo_dbg.bat`, `mapguide_dbg_setup.bat`)
 and the Debug OEM libraries once (`mapguide_dbg.bat -w=oem`) before `mapguide_dbg.bat -w=server`.
-`mapguide_rel_setup.bat` restores the Release staging afterwards, and the two configurations cannot be
-built at the same time.
+Staging Debug does not disturb the Release staging, so the Release configuration stays buildable and
+testable without re-running `mapguide_rel_setup.bat`.
 
 The `MG_CRT_LEAK_CHECK` gate landed upstream as r10226. The one remaining `MgDev` edit this repository
 needs — narrowing `Band.h`/`GridData.h` so the r10225 stylization tests do not pull the FDO expression

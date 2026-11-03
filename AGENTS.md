@@ -69,10 +69,25 @@ Rules for working with the source trees:
   Do not run `svn commit`, or any svn command that writes to the repository. `svn update` / `svn info`
   are fine.
 - `MgDev\Oem\FDO` is a **staging copy** written by `mapguide_*_setup.bat` out of
-  `fdo-build\{dbg64,rel64}\Fdo` (`Inc`/`Lib` → `Oem\FDO\{Inc,Lib64}`, `Bin` → `Oem\FDO\Bin\{Debug64,Release64}`).
-  It is overwritten on every setup run: never edit it, and never treat it as a source tree.
-- Debug and Release builds of MapGuide cannot be made simultaneously — `mg-install\dbg64` and
-  `mg-install\rel64` are built one at a time. The same applies to the two FDO trees.
+  `fdo-build\{dbg64,rel64}\Fdo`: `Inc` (shared, config-neutral), `Lib` → `Oem\FDO\Lib64\{Debug64,Release64}`
+  and `Bin` → `Oem\FDO\Bin\{Debug64,Release64}`. Each setup run replaces only its own configuration's
+  folders, so both configurations stay staged and buildable from one `MgDev` tree. It is still a
+  **staging copy**: never edit it, and never treat it as a source tree.
+- The two configurations are separated throughout — `Oem\FDO\Lib64\{Debug64,Release64}` for the FDO
+  import libs, `MgDev\{Debug64,Release64}` for the build output, `mg-install\{dbg64,rel64}` for the
+  installations — so one `MgDev` working copy holds both and they can be built in either order. They
+  are still built **one at a time, never concurrently**: what the two share is the build environment
+  rather than the outputs — `setenvironment64.bat` rewrites the single `MgDev\nuget.config` from that
+  configuration's variant, `packages\Installed` is one NuGet global-package folder for both, and the
+  installer preparation step rewrites
+  `Bindings\src\Managed\DotNet\MapViewerStub\MapViewerStub.csproj`. The two FDO trees are likewise one
+  configuration each.
+- Both source trees that name that directory are gitignored, so their working-copy edits are kept as
+  patches: [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch) (apply with `svn patch` from
+  `MgDev`) for the `Oem\FDO\Lib64\$(Configuration)64` library directory in the `.vcxproj` files that
+  link FDO plus `MG_FDO_LIB` in `setenvironment64.bat`, and
+  [installer-dual-config-fdo-sdk.patch](./installer-dual-config-fdo-sdk.patch) (apply from `Installer`)
+  for `FdoRegUtil.vcxproj`, which the installer preparation step builds.
 - Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
   repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
 - A fix made in the sibling repo's FDO working copies reaches this repo by `svn update`, once it has been
@@ -165,8 +180,10 @@ mapguide_dbg.bat
 
 `mapguide_rel_setup.bat` / `mapguide_rel.bat` are the Release equivalents (`mg-install\rel64`). The
 setup step must be re-run after every FDO build, because it is what copies the FDO SDK into
-`MgDev\Oem\FDO`. `BUILD_INSTALLER=1` and `BUILD_INSTANTSETUP=1` add the installer and InstantSetup
-bundles; `MG_RELEASE_LABEL` sets the release label (default `Trunk`).
+`MgDev\Oem\FDO`; it stages only its own configuration (`Lib64\Debug64` or `Lib64\Release64`) and leaves
+the other in place, so both configurations can be built and tested from one `MgDev` checkout.
+`BUILD_INSTALLER=1` and `BUILD_INSTANTSETUP=1` add the installer and InstantSetup bundles;
+`MG_RELEASE_LABEL` sets the release label (default `Trunk`).
 
 Both wrappers accept the tree's own options, most usefully `-w=<component>` to build a subset
 (`-w=server`, `-w=web`, `-w=bindings`, ...) and `-h` for the exhaustive list. A component other than
@@ -252,10 +269,11 @@ as environmental until proven otherwise.
 - `-Configuration` selects the tree (`Release` → `MgDev\Server\bin\Release64`, `Debug` →
   `MgDev\Server\bin\Debug64`). The default is `Release`, unlike the FDO runner, because Release is the
   configuration that is normally built here; a Debug pass does not validate Release and vice versa.
-- A Debug run needs the Debug FDO SDK staged first, because `mapguide_dbg_setup.bat` copies
-  `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO` and that tree does not exist until `fdo_dbg.bat` has been
-  run. With only the Release FDO staged, `-Configuration Debug` reports `SKIPPED`, which is the
-  intended signal rather than a failure. A Debug tree that has never been built also needs its OEM
+- A Debug run needs the Debug FDO SDK staged first, because `mapguide_dbg_setup.bat` stages
+  `fdo-build\dbg64\Fdo` into `MgDev\Oem\FDO\Lib64\Debug64` and `MgDev\Oem\FDO\Bin\Debug64`, and those
+  folders do not exist until `fdo_dbg.bat` has been run. With the Debug FDO never staged,
+  `-Configuration Debug` reports `SKIPPED`, which is the intended signal rather than a failure; staging
+  Debug leaves the Release staging in place. A Debug tree that has never been built also needs its OEM
   libraries first (`mapguide_dbg.bat -w=oem`), or the server solution fails to link `ACEd.lib` and
   `xerces-c_3mgD.lib`.
 - By default the selected scopes are passed to a single `mgserver` run (`test a,b,...`), so a
@@ -653,7 +671,7 @@ An explicit instruction in the task overrides the line for that task only; say w
   still: Debug and Release also differ in CRT flavor and `_ITERATOR_DEBUG_LEVEL`, so the two are
   different runtimes, not the same runtime at different speed. Optimization also removes the NULL-`this`
   guards a Debug build keeps (see [CPP_STYLE.md](./CPP_STYLE.md#null-this-optimization-and-release-builds)).
-  Because the two configurations cannot be built simultaneously here, treat the second one as a planned
+  Because the two configurations are different runtimes, treat the second one as a planned
   pass rather than an afterthought.
 - **Shipped-header changes** — check the [current mode](#current-cycle) first, then
   [FDO API/ABI compatibility](#fdo-apiabi-compatibility) for how to tell whether the shipped surface
@@ -685,8 +703,18 @@ An explicit instruction in the task overrides the line for that task only; say w
 
 ## Known issues
 
-- Debug and Release MapGuide builds cannot be made simultaneously; build them one at a time, and
-  re-run `mapguide_*_setup.bat` after every FDO build.
+- MapGuide Debug and Release coexist in one `MgDev` tree (separate FDO staging under
+  `Oem\FDO\Lib64` and `Oem\FDO\Bin`, separate `MgDev\{Debug64,Release64}` output), but they cannot be
+  built concurrently: run `mapguide_dbg.bat` and `mapguide_rel.bat` one after the other, because
+  `nuget.config` and `packages\Installed` are shared ([Repository model](#repository-model)).
+  `mapguide_*_setup.bat` must be re-run after every FDO build to refresh that configuration's staging,
+  and the installer preparation step is Release-only.
+- r10237 added `Server\src\UnitTesting\TestSelection.cpp`, which calls `FdoFilter::Parse`, but the
+  Windows project file `UnitTesting.vcxproj` gained no `FDO.lib` in `AdditionalDependencies`, so
+  `MgUnitTesting.dll` failed to link (`LNK2019: __imp_?Parse@FdoFilter@@SAPEAV1@PEB_W@Z`). The
+  working-copy fix — `FDO.lib` next to `ACEd.lib`/`ACE.lib` — is included in
+  [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch); drop that hunk once an `svn update`
+  brings an upstream fix.
 - The MapGuide server suite is not green on an unmodified tree here. Two scopes fail, and both are
   independent of each other:
   - `LogManager` — `EnumerateLogs` (`TestLogManager.cpp:152`, `REQUIRE(logs->Contains(junkNameProp))`)
