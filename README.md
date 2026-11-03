@@ -514,8 +514,46 @@ the slow coordinate-system tests — is split into names that match nothing, run
 their data prepared and fails them for the wrong reason.
 
 `MgDev\UnitTest\run_server_tests.bat` is a different thing and is not used by this loop: it copies the
-test data next to a *configured installation* and starts it, which is what the web-tier and mapagent
-suites under `MgDev\UnitTest\` need.
+test data next to a *configured installation* and starts it.
+
+## Running the MapGuide web and API binding tests (`Run-WebTests.ps1`)
+
+The web tier and the .NET, Java, and PHP API binding test runners need a live MapGuide server. The
+root-level runner starts the selected Debug or Release `mgserver` in interactive mode, waits for its
+site port, runs the selected suites, and sends Ctrl+C to stop the server gracefully. It refuses to
+start if another `mgserver` process is already running.
+
+```powershell
+.\Run-WebTests.ps1 -List
+.\Run-WebTests.ps1                                   # all four suites
+.\Run-WebTests.ps1 -Test Web                         # C++ WebTestRunner
+.\Run-WebTests.ps1 -Test Bindings                    # .NET, Java, and PHP
+.\Run-WebTests.ps1 -Configuration Debug -Test Java, DotNet
+```
+
+`-Test` accepts `Web`, `DotNet`, `Java`, `Php`, `Bindings`, or `All` (the default). Suites run
+serially in one server process. Java runs before the other suites when selected because it loads the
+Sheboygan sample package used by WebTestRunner. When Java is not selected, the script loads that
+package with `mgserver loadpackage` before starting the server. Binding runs remove only their
+generated SQLite `.db` files under `MgDev\UnitTest\TestData` before each suite so stale test output
+does not affect validation.
+
+The MapGuide server and WebTestRunner must be built for the chosen configuration. Binding runners
+are taken from the matching `mg-install\{rel64,dbg64}` test pack, so build the bindings/install
+components as well. Java requires `JAVA_HOME` or `java.exe` on `PATH`. `-AdminPass` supplies the
+MapGuide Administrator password for the Java and .NET runners (default: `admin`;
+`MG_TEST_ADMIN_PASS` is used when set). The PHP test sources currently hardcode `Administrator/admin`,
+so they do not honor this option. The server site port in
+`Server\bin\<Configuration>64\serverconfig.ini` must match the one in
+`Web\bin\<Configuration>64\webconfig.ini`. For the binding runners, the script writes a temporary
+web configuration under `testlogs` with absolute resource and dictionary paths so each runner can
+initialize from its own working directory.
+
+Output is streamed and logged to `testlogs\MgRel64_<Suite>.txt` or
+`testlogs\MgDbg64_<Suite>.txt`; the language runners also keep their detailed logs there or in their
+test-pack working directories. Missing runners and runs with no test cases are reported as failures,
+not passes. This runner covers the WebTestRunner and API binding suites; it does not start an HTTP
+server for the separate MapAgent acceptance tests.
 
 ### Leak checking a MapGuide scope from the command line (`MG_CRT_LEAK_CHECK`)
 
