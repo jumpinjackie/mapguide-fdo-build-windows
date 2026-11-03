@@ -69,9 +69,8 @@ and `Oem\FDO\Bin\Debug64` or `Release64`) and its own output directories (`MgDev
 never concurrently: they share `MgDev\nuget.config` and the `MgDev\packages\Installed` NuGet cache.
 Re-running a setup script replaces only its own configuration's staging and leaves the other in place.
 The two FDO trees (`fdo-dbg`/`fdo-rel`) are likewise one configuration each. The `MgDev` project-file
-changes behind this are kept as [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch), and the
-installer's `FdoRegUtil` reference as
-[installer-dual-config-fdo-sdk.patch](./installer-dual-config-fdo-sdk.patch).
+changes behind this are in the MapGuide history as r10243, and the installer's `FdoRegUtil` reference
+is Installer r10244.
 
 ## SQL Server Spatial performance levers (`FDO_SQS_PERF`)
 
@@ -80,9 +79,8 @@ test suite exercises them: the physical-schema catalog query (`sys.objects`, the
 query) is re-executed for every catalog lookup, and `SQLDescribeParam()` is called for every bound
 parameter, which costs a server round trip each. Together they are the largest source of the SQL
 Server traffic in the `SqlServerSpatial` FDO unit-test suite and a large part of why that suite is
-several times slower than the equivalent MySQL/PostGIS suites — see
-[HANDOFF-SqlServerSpatial-Performance.md](./HANDOFF-SqlServerSpatial-Performance.md). Both can be
-avoided, and both are opt-in behind one flag:
+several times slower than the equivalent MySQL/PostGIS suites. Both can be avoided, and both are
+opt-in behind one flag:
 
 ```powershell
 $env:FDO_SQS_PERF="1"           # remember catalog lookups and parameter types
@@ -111,15 +109,14 @@ goes away, and when a statement that can change what a parameter resolves to (DD
 prepared.
 
 Together they take the `FdoSelectTest` fixture from ~45 s to ~20 s and the full suite from
-~24 min to ~9m30s, both `OK` (see the handoff's §11 and §13 for the measurements).
+~24 min to ~9m30s, both `OK`.
 
 Both paths are also leak-checked: with `FDO_CRT_LEAK_CHECK=1` the fixture leaks the same 7 blocks
 (~8 KB) of pre-existing global state with the flag on as with it off, against ~5.5 MB leaked before
-the schema-manager catalog reader's field lookups were made ownership-correct (see the handoff's
-§16, which also records the full suite at 8m 12.0 s after that fix).
+the schema-manager catalog reader's field lookups were made ownership-correct; after that fix the
+full suite ran in 8m 12.0 s.
 
-The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a
-patch at [fdo-sqs-perf.patch](./fdo-sqs-perf.patch) (apply with `svn patch` from `fdo-dbg`).
+The provider and driver changes are in the gitignored FDO SVN tree, committed upstream as FDO r8392.
 
 ## SQL Server ODBC driver selection
 
@@ -155,9 +152,8 @@ failing with "The certificate chain was issued by an authority that is not trust
 skips validation, it does not authenticate the server; a deployment that needs that can replace the
 attribute in `FdoRdbmsSqlServerConnection::GenConnectionStringParm()`.
 
-The provider and unit-test driver changes live in the gitignored FDO SVN tree, so they are also kept
-as a patch at [fdo-sqlserver-odbc-driver.patch](./fdo-sqlserver-odbc-driver.patch) (apply with
-`svn patch` from both `fdo-dbg` and `fdo-rel`).
+The provider and unit-test driver changes are in the gitignored FDO SVN tree, committed upstream as
+FDO r8420 and r8423.
 
 ## Batch parameter values / bulk insert for SQL Server Spatial (parked)
 
@@ -166,11 +162,10 @@ Separate from the round-trip work above: an external client's "bulk copy" featur
 insert command. The SQL Server Spatial provider answers `NULL`, so those inserts go one row per
 `Execute()`.
 
-This has been investigated but **not implemented**: the findings, the two candidate paths (an ODBC
-parameter-array batch that the RDBI/ODBC layers already have the plumbing for, and a BCP-backed bulk
-insert behind a new optional RDBI capability), the identity/transaction obstacles, the ABI check under
-the current `freeze` mode, and the open questions for the client are all parked in
-[HANDOFF-SqlServerSpatial-BulkInsert.md](./HANDOFF-SqlServerSpatial-BulkInsert.md).
+This has been investigated but **not implemented**: the two candidate paths (an ODBC parameter-array
+batch that the RDBI/ODBC layers already have the plumbing for, and a BCP-backed bulk insert behind a
+new optional RDBI capability), the identity/transaction obstacles, the ABI check under the current
+`freeze` mode, and the open questions for the client remain open.
 
 ## Connection and command timeouts for SQL Server Spatial (FDO ticket 880)
 
@@ -184,6 +179,9 @@ read by nothing, and nothing in the tree ever set `SQL_ATTR_LOGIN_TIMEOUT` or `S
 The only bound on a connect attempt was therefore whatever the ODBC driver applied to itself -
 Microsoft's SQL Server drivers default to 15 s, plus the OS TCP retry, which is the "around 20 sec" the
 ticket measured.
+
+The change described in this section is complete and validated but not yet committed upstream; the
+measurements below were taken with it applied in both `fdo-dbg` and `fdo-rel`.
 
 Both timeouts now live in the GenericRdbms layer and are applied by the RDBI driver:
 
@@ -226,12 +224,8 @@ is `OK (58 tests)`, `FdoSelectTest` is `OK (24 tests)`, `FdoApplySchemaTest` is 
 11 min), and the `MySql`/`PostGis` `ConnectTests` stay `OK (4 tests)`, which is what exercises the no-op
 path in drivers with no such methods.
 
-The provider and driver changes live in the gitignored FDO SVN tree, so they are also kept as a patch at
-[fdo-timeouts.patch](./fdo-timeouts.patch) (apply with `svn patch` from `fdo-dbg`; the same change is in
-`fdo-rel`). The diagnosis, the repeated measurements and the MapGuide-side analysis are in
-[HANDOFF-FdoTicket880-Timeouts.md](./HANDOFF-FdoTicket880-Timeouts.md), and the two throwaway probes whose
-numbers are quoted above are in [probes/](./probes), each documenting its own usage in its header
-comment.
+The two throwaway probes whose numbers are quoted above are in [probes/](./probes), each documenting
+its own usage in its header comment.
 
 One thing this does not fix, because it is not in the provider: the ticket's "all other requests were
 blocked" is MapGuide holding its manager-wide `sm_mutex` across `FdoIConnection::Open()` -
@@ -241,9 +235,9 @@ timeout above only bounds how long that is.
 
 That lock is the connection pool's, not FDO's: it guards the provider registry, the per-provider slot
 counters and the connection cache's in-use flags, and the pool slot is already reserved before the open
-begins - so it is scoped wider than the state it protects. Narrowing it (and the analysis behind that
-claim, including why the recursive mutex and the reservation/claim steps have to stay as they are) is in
-[the handoff](./HANDOFF-FdoTicket880-Timeouts.md#6-the-mapguide-half-analysed-not-changed).
+begins - so it is scoped wider than the state it protects. Narrowing it, while keeping the recursive
+mutex and the reservation/claim steps as they are, would remove that stall; it is a MapGuide-side
+change and is not part of the provider work above.
 
 ## Test data stores are named after the Windows account (`fdo_<account>`)
 
@@ -271,8 +265,7 @@ every run after that was green — which made it look like a flaky test. It now 
 store first, so the first run is green too (PostGIS, MySQL and SQL Server Spatial: their
 `TestProviderInfo` are the same code).
 
-Those three test files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
-[fdo-connectioninfo-datastore.patch](./fdo-connectioninfo-datastore.patch).
+Those three test files live in the gitignored FDO SVN tree, committed upstream as FDO r8389.
 
 ## The PostGIS schema tests ignore the schemas the template database contributes
 
@@ -303,9 +296,7 @@ drop them before comparing, through a provider hook:
   least one class in every schema they create, so an empty one was inherited from the template).
   `public` is never ignored: the tests expect it, and it is legitimately empty in some masters.
 
-Those files live in the gitignored FDO SVN tree, so the change is also kept as a patch at
-[fdo-postgis-extra-schema.patch](./fdo-postgis-extra-schema.patch) (apply with `svn patch` from
-`fdo-dbg`).
+Those files live in the gitignored FDO SVN tree, committed upstream as FDO r8403.
 
 ## The ODBC Access suite runs one fixture per process (`OdbcAccess`)
 
@@ -393,8 +384,8 @@ Two further notes:
 
 The FDO-tree part of this — giving `MessageTest` a registry name of its own (`OdbcAccessMessageTest`
 in `Providers\GenericRdbms\Src\UnitTest\Odbc\OdbcTestRegister.cpp`) and the note in the tree's own
-readme (`OpenSourceBuild__README.txt`, in its Windows ODBC unit-test section) — is also kept as a
-patch at [fdo-odbc-access-suite.patch](./fdo-odbc-access-suite.patch).
+readme (`OpenSourceBuild__README.txt`, in its Windows ODBC unit-test section) — is in the FDO tree as
+r8396 and r8407.
 
 ## Leak checking an FDO suite from the command line (`FDO_CRT_LEAK_CHECK`)
 
@@ -446,8 +437,7 @@ is no ASan-style leak report on Windows. The CRT debug heap, Application Verifie
 Visual Studio's memory tooling are the options, and the first of those works fine from a
 command-line run.
 
-The test-host change lives in the gitignored FDO SVN tree, so it is also kept as a patch at
-[fdo-crt-leak-check.patch](./fdo-crt-leak-check.patch).
+The test-host change lives in the gitignored FDO SVN tree, committed upstream as FDO r8390.
 
 ## Running the MapGuide server test suite (`Run-MgTests.ps1`)
 
@@ -584,11 +574,9 @@ and the Debug OEM libraries once (`mapguide_dbg.bat -w=oem`) before `mapguide_db
 Staging Debug does not disturb the Release staging, so the Release configuration stays buildable and
 testable without re-running `mapguide_rel_setup.bat`.
 
-The `MG_CRT_LEAK_CHECK` gate landed upstream as r10226. The one remaining `MgDev` edit this repository
-needs — narrowing `Band.h`/`GridData.h` so the r10225 stylization tests do not pull the FDO expression
-engine through `Stylization.h` — is uncommitted in the working copy and also kept as
-[mg-stylization-includes.patch](./mg-stylization-includes.patch), because `MgDev` is gitignored and the
-working-copy change is invisible to git.
+The `MG_CRT_LEAK_CHECK` gate landed upstream as r10226, and the `Band.h`/`GridData.h` narrowing that
+keeps the r10225 stylization tests from pulling the FDO expression engine through `Stylization.h`
+landed as r10227.
 
 ## Steps (tldr, powershell)
 

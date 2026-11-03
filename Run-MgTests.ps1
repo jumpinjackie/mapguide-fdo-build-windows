@@ -102,6 +102,7 @@ $TestTable = [ordered]@{
     'DrawingService'     = @{ Source = 'TestDrawingService.cpp';     Covers = 'Server\Services\Drawing' }
     'FeatureService'     = @{ Source = 'TestFeatureService.cpp';     Covers = 'Server\Services\Feature' }
     'Geometry'           = @{ Source = 'TestGeometry.cpp';           Covers = 'Common\Geometry' }
+    'GwsQueryEngine'     = @{ Source = 'TestGwsQueryEngine.cpp';     Covers = 'Server\Gws\GwsQueryEngine (join algorithms)' }
     'KmlService'         = @{ Source = 'TestKmlService.cpp';         Covers = 'Server\Services\Kml' }
     'LogManager'         = @{ Source = 'TestLogManager.cpp';         Covers = 'Server\Common\LogManager' }
     'MappingService'     = @{ Source = 'TestMappingService.cpp';     Covers = 'Server\Services\Mapping' }

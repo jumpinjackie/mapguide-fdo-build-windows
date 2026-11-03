@@ -83,22 +83,17 @@ Rules for working with the source trees:
   installer preparation step rewrites
   `Bindings\src\Managed\DotNet\MapViewerStub\MapViewerStub.csproj`. The two FDO trees are likewise one
   configuration each.
-- Both source trees that name that directory are gitignored, so their working-copy edits are kept as
-  patches: [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch) (apply with `svn patch` from
-  `MgDev`) for the `Oem\FDO\Lib64\$(Configuration)64` library directory in the `.vcxproj` files that
-  link FDO plus `MG_FDO_LIB` in `setenvironment64.bat`, and
-  [installer-dual-config-fdo-sdk.patch](./installer-dual-config-fdo-sdk.patch) (apply from `Installer`)
-  for `FdoRegUtil.vcxproj`, which the installer preparation step builds.
+- Both source trees that name that directory are gitignored. The dual-config FDO SDK layout
+  (`Oem\FDO\Lib64\$(Configuration)64` in the `.vcxproj` files that link FDO plus `MG_FDO_LIB` in
+  `setenvironment64.bat`, and `FdoRegUtil.vcxproj` in the installer) is in the MapGuide and Installer
+  histories as r10243 and r10244, and the two Windows-only build fixes the `GwsQueryEngine` test scope
+  needs — `<windows.h>` in place of `<winbase.h>` in `GwsThreads.h`, and `FDOCommon.lib` in
+  `UnitTesting.vcxproj` — are r10254.
 - Both source trees are C++11 (the same sources build under the CMake-based Linux build in the sibling
   repo, which pins `CMAKE_CXX_STANDARD 11`), so do not introduce newer language features.
 - A fix made in the sibling repo's FDO working copies reaches this repo by `svn update`, once it has been
-  committed upstream — the normal case, needing no patch. While a fix is still uncommitted there, mirror
-  it by reproducing the diff rather than by writing the same edit twice: in the sibling, `svn diff` from
-  its FDO tree root; here, from each FDO tree root (`fdo-dbg` **and** `fdo-rel`) run
-  `svn patch <path-to-diff>`, after `svn update`-ing to at least the revision its `(revision N)` headers
-  name. The sibling's `patches/pending.patch` is only the scratch file it pipes that `svn diff` into so
-  the change set can be read in an editor before it commits — it is not a published input, is not kept in
-  step with the working copy, and is deleted once committed, so never depend on it being there.
+  committed upstream — the normal case. While a fix is still uncommitted there, mirror it by reproducing
+  the same edit in each FDO tree (`fdo-dbg` **and** `fdo-rel`) rather than by writing it twice.
 
 ### Source of truth and history
 
@@ -106,6 +101,10 @@ Rules for working with the source trees:
   (`https://svn.osgeo.org/fdo/branches/4.2`) and `MgDev` for MapGuide
   (`https://svn.osgeo.org/mapguide/branches/4.0/MgDev`). Search and read them in place (grep, glob,
   LSP); the Debug copy is enough for reading code.
+- **Transient transfer artifacts are not documentation.** An artifact that exists only to move an
+  uncommitted change between the Linux and Windows build environments must not be named or linked from
+  `README.md`, this file, `CPP_STYLE.md`, `docs/**`, or any other durable documentation. Describe the
+  change itself, and cite the revision once it is committed.
 - The GitHub repositories `jumpinjackie/fdo` and `jumpinjackie/fdo_cmake` are **unofficial by-products
   of abandoned SVN→Git experiments**. They are not authoritative, may be stale or divergent, and must
   **not** be used as a point of reference or cited for behavior, capabilities or history.
@@ -132,9 +131,6 @@ must **not** mention files the other one owns:
 - The converse holds: a **git** commit message must not describe edits under the SVN trees above. Those
   paths are gitignored, so git has no record of them and they are not part of any commit you can make
   here — they are committed with `svn commit` once the user has reviewed the diff.
-- The sibling repo's `patches/pending.patch` is a copy of the very diff a message describes, not a path
-  in either change set, so it must never appear in one. See [Source trees](#source-trees) for what that
-  file is and is not.
 - The git-tracked files most often mistaken for source-tree content are `docs/fdo-memory-leaks.md`,
   which records fixes made in the FDO trees, and `Run-FdoTests.ps1`, whose suite table is edited
   alongside them. Both are committed to git, so neither belongs in an SVN commit message. The same
@@ -302,8 +298,9 @@ as environmental until proven otherwise.
   none of their data prepared and fails them for the wrong reason. Use scope names, and accept their
   whole runtime.
 - Iteration cost on the Release tree, measured with the whole server suite green except where
-  [Known issues](#known-issues) says otherwise: `Geometry` 1 s, `Misc` 6 s, `RenderingService` 25 s,
-  `FeatureService` 74 s, `CoordinateSystem` 59 s, `TileService` 84 s, every scope 5 min.
+  [Known issues](#known-issues) says otherwise: `Geometry` 1 s, `GwsQueryEngine` 1 s, `Misc` 6 s,
+  `RenderingService` 25 s, `FeatureService` 74 s, `CoordinateSystem` 59 s, `TileService` 84 s, every
+  scope 5 min.
 - A new test belongs to an existing scope: tag its `TEST_CASE` with that suite's tag (e.g. `"[Misc]"`)
   and it runs with the rest of that file's tests. A new *tag* has to be added to the list in
   `MgDev\Server\src\UnitTesting\UnitTesting.cpp` (which is what `mgserver test all` and
@@ -320,6 +317,7 @@ as environmental until proven otherwise.
 | `DrawingService` | `TestDrawingService.cpp` | `Server\Services\Drawing` |
 | `FeatureService` | `TestFeatureService.cpp` | `Server\Services\Feature` |
 | `Geometry` | `TestGeometry.cpp` | `Common\Geometry` |
+| `GwsQueryEngine` | `TestGwsQueryEngine.cpp` | `Server\Gws\GwsQueryEngine` (join algorithms) |
 | `KmlService` | `TestKmlService.cpp` | `Server\Services\Kml` |
 | `LogManager` | `TestLogManager.cpp` | `Server\Common\LogManager` |
 | `MappingService` | `TestMappingService.cpp` | `Server\Services\Mapping` |
@@ -619,8 +617,8 @@ An explicit instruction in the task overrides the line for that task only; say w
 ## Code style
 
 - **Documentation and comments are US English** — this applies to every word committed under the
-  paths above: the `.md` files (`README.md`, this file, `CPP_STYLE.md`, `docs/**`, the
-  `HANDOFF-*.md` files) and every comment (`//` in the C++ trees, `REM` in the batch wrappers, `#` in
+  paths above: the `.md` files (`README.md`, this file, `CPP_STYLE.md`, `docs/**`) and every comment
+  (`//` in the C++ trees, `REM` in the batch wrappers, `#` in
   `Run-FdoTests.ps1`, `--` in SQL). Write *behavior*, *initialization*, *optimize*, *catalog*,
   *parameterize*, *summarize*, *normalize*, *analyze* — not *behaviour*, *initialisation*,
   *optimise*, *catalogue*, *parameterise*, *summarise*, *normalise*, *analyse*. Commit messages
@@ -710,12 +708,6 @@ An explicit instruction in the task overrides the line for that task only; say w
   `nuget.config` and `packages\Installed` are shared ([Repository model](#repository-model)).
   `mapguide_*_setup.bat` must be re-run after every FDO build to refresh that configuration's staging,
   and the installer preparation step is Release-only.
-- r10237 added `Server\src\UnitTesting\TestSelection.cpp`, which calls `FdoFilter::Parse`, but the
-  Windows project file `UnitTesting.vcxproj` gained no `FDO.lib` in `AdditionalDependencies`, so
-  `MgUnitTesting.dll` failed to link (`LNK2019: __imp_?Parse@FdoFilter@@SAPEAV1@PEB_W@Z`). The
-  working-copy fix — `FDO.lib` next to `ACEd.lib`/`ACE.lib` — is included in
-  [mg-dual-config-fdo-sdk.patch](./mg-dual-config-fdo-sdk.patch); drop that hunk once an `svn update`
-  brings an upstream fix.
 - The MapGuide server suite is not green on an unmodified tree here. Two scopes fail, and both are
   independent of each other:
   - `LogManager` — `EnumerateLogs` (`TestLogManager.cpp:152`, `REQUIRE(logs->Contains(junkNameProp))`)
@@ -751,14 +743,14 @@ An explicit instruction in the task overrides the line for that task only; say w
   behaviors live in the `OdbcAccess` entry of `Run-FdoTests.ps1`, and
   [README.md](./README.md#the-odbc-access-suite-runs-one-fixture-per-process-odbcaccess) has the
   measurements. The FDO-tree part (the registry name `MessageTest` needs to be a chunk on its own,
-  and the same note added to the tree's `OpenSourceBuild__README.txt`) is kept as
-  `fdo-odbc-access-suite.patch`.
+  and the same note added to the tree's `OpenSourceBuild__README.txt`) is in the FDO tree as r8396
+  and r8407.
 - No `*Init.txt` here sets `datastore`, so the database-backed suites derive their data store name
   as `fdo_<Windows account>` (`fdo_user` on this machine) and create it on demand. A different
   account, or a recreated database container, therefore starts from an empty data store; the suite
   copes because the connection-info test creates it first (see
-  [README.md](./README.md#test-data-stores-are-named-after-the-windows-account-fdo_account) and
-  `fdo-connectioninfo-datastore.patch`).
+  [README.md](./README.md#test-data-stores-are-named-after-the-windows-account-fdo_account); the test
+  change is FDO r8389).
 - The MapGuide installer requires WiX, and the InstantSetup bundle requires the .NET SDK; neither is
   needed to build or test the C++ trees.
 - The GDAL provider's Windows message project has never merged anything but the static RC template, so
