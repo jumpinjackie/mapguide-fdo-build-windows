@@ -592,7 +592,9 @@ $env:MG_RELEASE_LABEL="Final"
 ## Artifacts produced
 
  * FDO binaries at: `fdo-build\rel64`
- * InstantSetup bundle at: `mg-install\rel64`
+ * InstantSetup bundle at: `mg-install\rel64`. The server install step creates `Repositories`, `Logs`,
+   `Packages` and `Temp` empty rather than copying them out of the build output, so the bundle carries
+   no site repository, session data files, tile caches or logs left by earlier test runs
  * Windows installer at: `Installer\Output\en-US`
 
 ## Agent guidance

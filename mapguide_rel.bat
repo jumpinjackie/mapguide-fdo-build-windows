@@ -141,8 +141,13 @@ copy /Y *.dll %INSTALL_DIR%\Setup
 copy /Y *.config %INSTALL_DIR%\Setup
 popd
 :zip_mginstantsetup
+REM 7z add mode updates the entries it is given and leaves every other entry
+REM alone, so updating an existing archive would keep content the staged
+REM installation no longer has. Start from a fresh archive every time.
+set "MG_INSTANTSETUP_EXE=%INSTALL_DIR%\MapGuideOpenSource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-InstantSetup-x64.exe"
+if exist "%MG_INSTANTSETUP_EXE%" del /F /Q "%MG_INSTANTSETUP_EXE%"
 cd /D %INSTALL_DIR%
-7z a %INSTALL_DIR%\MapGuideOpenSource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-InstantSetup-x64.exe -mmt -mx5 -sfx7z.sfx CS-Map Server Web Setup Snapshot
+7z a "%MG_INSTANTSETUP_EXE%" -mmt -mx5 -sfx7z.sfx CS-Map Server Web Setup Snapshot
 7z a %INSTALL_DIR%\mapguideopensource-%MG_VER_MAJOR_MINOR_BUILD%.%MG_VER_REV%-pdbs.7z pdbs/**/*.pdb pdbs/*.pdb
 goto done
 

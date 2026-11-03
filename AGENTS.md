@@ -180,7 +180,13 @@ setup step must be re-run after every FDO build, because it is what copies the F
 `MgDev\Oem\FDO`; it stages only its own configuration (`Lib64\Debug64` or `Lib64\Release64`) and leaves
 the other in place, so both configurations can be built and tested from one `MgDev` checkout.
 `BUILD_INSTALLER=1` and `BUILD_INSTANTSETUP=1` add the installer and InstantSetup bundles;
-`MG_RELEASE_LABEL` sets the release label (default `Trunk`).
+`MG_RELEASE_LABEL` sets the release label (default `Trunk`). The server install step does not copy the
+server's runtime folders out of the build output, where the test suites and any hand-run server have
+written session data files, site and library database files, tile caches and logs: it creates
+`Server\Repositories` (`Library\DataFiles`, `Session\DataFiles`, `Site`, `TileCache`), `Logs`,
+`Packages` and `Temp` empty, as an installation has them and as the server expects them on its first
+start. `mapguide_rel.bat` also deletes an existing InstantSetup archive before writing the new one,
+because 7-Zip's add mode keeps entries the staged tree no longer has.
 
 Both wrappers accept the tree's own options, most usefully `-w=<component>` to build a subset
 (`-w=server`, `-w=web`, `-w=bindings`, ...) and `-h` for the exhaustive list. A component other than
