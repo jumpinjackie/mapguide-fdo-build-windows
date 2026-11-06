@@ -34,6 +34,7 @@ Durable content (edited and committed to git):
 - `Run-FdoTests.ps1` — the FDO unit-test runner, including its suite table
 - `Run-MgTests.ps1` — the MapGuide server test runner, including its scope table
 - `Run-WebTests.ps1` — the MapGuide web-tier and API binding test runner
+- `Bump-Version.ps1` — the product version baseline for both trees
 - `revnum.pl` — SVN revision extractor used by `mapguide_*_setup.bat`
 - `*Init.txt` — the init files the database-backed suites need
 - `docs/**` — the memory-leak catalog

@@ -3,10 +3,11 @@ rem Root directory where this script resides (includes trailing backslash)
 SET "SCRIPT_DIR=%~dp0"
 SET MG_VER_MAJOR=4
 SET MG_VER_MINOR=0
-SET MG_VER_BUILD=0
+SET MG_VER_BUILD=1
 SET FDO_BUILD_SRC=%SCRIPT_DIR%fdo-build\rel64\Fdo
 SET MG_BASE_DIR=%SCRIPT_DIR%MgDev
 SET MG_LINUX_COMMON_LIBS=%SCRIPT_DIR%mgcommon\mapguideopensource-common.tar.gz
+SET MG_LINUX_PORTABLE_LIBS=%SCRIPT_DIR%mgcommon\mapguideopensource-portable.tar.gz
 SET "FDO_CONFIG=Release64"
 SET "FDO_BASE_DIR=%MG_BASE_DIR%\Oem\FDO"
 SET "FDO_BIN_DIR=%FDO_BASE_DIR%\Bin\%FDO_CONFIG%"
@@ -30,6 +31,6 @@ cscript updateversion.vbs /major:%MG_VER_MAJOR% /minor:%MG_VER_MINOR% /point:%MG
 call stampassemblies.bat %MG_VER_MAJOR%.%MG_VER_MINOR%.%MG_VER_BUILD%.%MG_VER_REV%
 popd
 pushd %MG_BASE_DIR%\Bindings
-call setup_linux_native_libs.cmd %MG_LINUX_COMMON_LIBS%
+call setup_linux_native_libs.cmd %MG_LINUX_COMMON_LIBS% %MG_LINUX_PORTABLE_LIBS%
 popd
 pause

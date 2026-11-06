@@ -117,8 +117,8 @@ This is the part that turns "wouldn't it be nice" into "this is mostly assembly"
 
 Both `win-x64` and `linux-x64` native folders exist in the published packages; the Windows rebuild in
 this tree produces `win-x64` only (the locally built `10202`/`10203` packages have no `linux-x64`
-folder), and `clean.bat` deletes `runtimes/linux-x64/native/*.so*` — which is consistent with the
-Linux natives being staged in from the sibling repo's container build before packing.
+folder), and `clean.bat` clears the staged `runtimes/linux-x64/native` tree — which is consistent with
+the Linux natives being staged in from the sibling repo's container build before packing.
 
 The API surface is the same API the PHP extension wraps, generated from the same
 `MapGuideApiGen.xml`/`Constants.xml` by IMake and SWIG, so `MgServerAdmin`, `MgSite`,
