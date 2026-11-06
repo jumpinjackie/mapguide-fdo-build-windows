@@ -20,47 +20,73 @@
     searching them on every run is what makes a bump slow. A file in the list
     that no longer exists is skipped, so both trees stay usable even if they have
     drifted. -Scan re-runs the search over the working copies to report any
-    carrier the list has missed; it takes a couple of minutes per tree, and it
-    reads the working copy only - no repository access is involved either way.
+    carrier the list has missed; it takes about ten seconds per tree, it reads
+    the working copy only - no repository access is involved either way, and svn
+    is asked only which paths it ignores.
 
-    MapGuide does have a version script: MgDev\updateversion.vbs and
-    MgDev\stampassemblies.bat stamp the product version and the managed
-    assemblies. This script only sets the MG_VER_MAJOR/MINOR/BUILD constants that
-    mapguide_<cfg>_setup.bat feeds them, then runs that setup script, so the
-    stamping stays in the tree's own hands. The setup script's fourth component
-    is the SVN revision, which is why -MapGuideVersion takes a trailing 0.
+    Either product can be bumped on its own: pass -MapGuideVersion, -FdoVersion
+    or both, and a version that is omitted leaves that product where it is.
+
+    MapGuide does have version scripts: MgDev\updateversion.vbs stamps
+    Common\ProductVersion.h, the .rc files and the ajax pages, and
+    MgDev\stampassemblies.bat stamps the managed assembly versions. This script
+    sets the MG_VER_MAJOR/MINOR/BUILD constants that mapguide_<cfg>_setup.bat
+    feeds them and then runs those two scripts itself, from the MgDev root, with
+    the version it was given - so passing 4.0.1.0 leaves the tree carrying
+    4.0.1.0. It does not go through mapguide_<cfg>_setup.bat, because that script
+    restamps the tree with the SVN revision as the fourth component; it keeps
+    that behaviour for when it is run on its own, as the build's preparation
+    step.
 
     Nothing is rebuilt. Run fdo_rel.bat / fdo_dbg.bat afterwards to produce the
     binaries that carry the new version, then mapguide_rel_setup.bat (again, to
     restage the rebuilt FDO) and mapguide_rel.bat.
 
 .PARAMETER MapGuideVersion
-    The new MapGuide base version, as major.minor.point.0, e.g. 4.0.1.0. The
-    fourth component has to be 0: mapguide_<cfg>_setup.bat replaces it with the
-    SVN revision, so the binaries are stamped 4.0.1.<revision>.
+    The exact MapGuide version to stamp, e.g. 4.0.1.0. The tree is stamped with
+    all four components, so the .rc files, Common\ProductVersion.h and the
+    managed assemblies carry exactly this and nothing else. The four wrappers
+    take the first three components (their MG_VER_* constants have no fourth),
+    which is what a later mapguide_<cfg>_setup.bat turns into
+    <version>.<svn-revision> when it restamps the tree for a build. Omit the
+    parameter to leave MapGuide where it is and bump FDO alone.
 
 .PARAMETER FdoVersion
     The new FDO version, e.g. 4.2.1.0. Provider names are major.minor only
     (OSGeo.SDF.4.2), so this changes the version and feature-data-objects
-    version fields without renaming a provider.
+    version fields without renaming a provider. Omit it to leave FDO where it is
+    and bump MapGuide alone.
 
-.PARAMETER Configuration
-    Which MapGuide setup script to run after the constants are set: Release
-    (mapguide_rel_setup.bat, the default), Debug, or Both. The MapGuide tree is
-    stamped once per run, so Both runs both setup scripts.
-
-.PARAMETER SkipMapGuideSetup
-    Only rewrite the version constants and literals; do not run the MapGuide
-    setup script. The MapGuide binaries then keep the version they carry now.
+.PARAMETER SkipMapGuideStamp
+    Only rewrite the MG_VER_* constants; do not stamp the MapGuide tree. The
+    binaries then keep the version they carry now.
 
 .PARAMETER Scan
-    Also search the FDO working copies for any file that still mentions the old
-    version but is not in the known carrier list, and report it. This is the
-    safety net for the list being out of date; it reads every text file in the
-    trees, which takes a couple of minutes per tree, so it is off by default.
+    Also search the FDO working copies for any file that still mentions the
+    version the trees carry before this run but is not in the known carrier
+    list, and report it. This is the safety net for the list being out of date;
+    it reads every text file outside Thirdparty and skips what the working copy
+    ignores (build output, generated .rc files), which takes about ten seconds
+    per tree, so it is off by default. It also runs on its own, without either
+    version, to check the current baseline.
 
 .EXAMPLE
     .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0
+
+    Bump both products, then run the MapGuide setup script to stamp the tree.
+
+.EXAMPLE
+    .\Bump-Version.ps1 -FdoVersion 4.2.1.0
+
+    Bump FDO only. The captured carrier list in both FDO working copies and the
+    installer's FDO_VERSION move; MapGuide and its wrappers are left alone.
+
+.EXAMPLE
+    .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0
+
+    Bump MapGuide only: the MG_VER_* constants in the four wrappers, then
+    MgDev\updateversion.vbs and MgDev\stampassemblies.bat stamp the tree with
+    exactly 4.0.1.0. No FDO file is read.
 
 .EXAMPLE
     .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0 -WhatIf
@@ -68,25 +94,23 @@
     Show what would change without changing it.
 
 .EXAMPLE
-    .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0 -Scan
+    .\Bump-Version.ps1 -FdoVersion 4.2.1.0 -Scan
 
-    Bump, then check that no file outside the known list still carries the old
-    version.
+    Bump FDO, then check that no file outside the known list still carries the
+    old version.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
+    [Parameter(Position = 0)]
     [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$MapGuideVersion,
 
-    [Parameter(Mandatory = $true, Position = 1)]
+    [Parameter(Position = 1)]
     [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$FdoVersion,
 
-    [ValidateSet('Release', 'Debug', 'Both')]
-    [string]$Configuration = 'Release',
-
-    [switch]$SkipMapGuideSetup,
+    [Alias('SkipMapGuideSetup')]
+    [switch]$SkipMapGuideStamp,
 
     [switch]$Scan
 )
@@ -116,10 +140,10 @@ $FdoBinaryPattern = '\.(png|jpe?g|gif|ico|bmp|dll|exe|so|dylib|lib|a|o|obj|zip|g
 #
 # Deliberately absent: Thirdparty/gdal's NEWS, its gifdataset.cpp and its GeoPackage notes, whose
 # "4.2.0" is giflib's and spatialite's version, and Thirdparty/openssl's IA-64 assembler, where
-# "4,2,0,0" is an ar.pfs register allocation. -Scan skips Thirdparty for that reason: it reads every
-# other text file, requires the version to stand on its own (so 4.2.15 and 4.2.1.2 do not count), and
-# reports the files that mention the old version but are not in this list. Run it after adding to the
-# list; a bump does not call it.
+# "4,2,0,0" is an ar.pfs register allocation. -Scan skips Thirdparty and what the working copy
+# ignores for the same reason, requires the version to stand on its own (so 4.2.15 and 4.2.1.2 do
+# not count), and reports the files that mention the old version but are not in this list. Run it
+# after adding to the list; a bump does not call it.
 $FdoVersionPaths = @(
     'build_linux.sh',
     'build_thirdparty.sh',
@@ -494,9 +518,41 @@ function Update-FdoTree {
     }
 }
 
+function Get-IgnoredPaths {
+    # The entries svn itself calls ignored or unversioned, relative to the tree root. A build writes
+    # copies of providers.xml, deps.json files, MSBuild caches and mc-generated .rc files into the
+    # tree, all of which mention the version without carrying it, so -Scan has to skip them.
+    param([string]$Root)
+
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($line in @(svn status --no-ignore $Root 2>$null)) {
+        if ($line -notmatch '^[I?]') { continue }
+        $path = $line.Substring(8).Trim().TrimEnd('\')
+        if ($path.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) {
+            $path = $path.Substring($Root.Length).TrimStart('\')
+        }
+        [void]$set.Add(($path -replace '/', '\'))
+    }
+    return , $set
+}
+
+function Test-IgnoredPath {
+    param([string]$RelativePath, $Ignored)
+
+    if ($Ignored.Contains($RelativePath)) { return $true }
+    $prefix = ''
+    $parts = $RelativePath.Split('\')
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        $prefix = if ($prefix) { "$prefix\$($parts[$i])" } else { $parts[$i] }
+        if ($Ignored.Contains($prefix)) { return $true }
+    }
+    return $false
+}
+
 function Find-UnlistedFdoCarriers {
     # The safety net for the captured list: search the working copy for files that still mention the
-    # old version but are not in the list. Reads files only, so no repository access is involved.
+    # old version but are not in the list. Reads files only, so no repository access is involved;
+    # svn status only asks the working copy what it ignores.
     # Vendored third-party sources are skipped: the 4.2.x numbers in them (openssl RFC sections, gdal,
     # libcurl) are their own, and the boundary guards keep a number like 4.2.15 out of the results.
     param([string]$Tree, [pscustomobject]$Current)
@@ -504,6 +560,10 @@ function Find-UnlistedFdoCarriers {
     $root = Join-Path $RepoRoot $Tree
     $watch = [Diagnostics.Stopwatch]::StartNew()
     Write-Note 'Walking the working copy to look for carriers the list does not know ...'
+    $ignored = Get-IgnoredPaths -Root $root
+    Write-Note ("{0:N0} ignored or unversioned path(s) skipped  ({1})" -f $ignored.Count, (Format-Elapsed $watch.Elapsed))
+
+    $watch.Restart()
     $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\\.svn\\' -and $_.FullName -notmatch '\\Thirdparty\\' -and $_.FullName -notmatch $FdoBinaryPattern -and $_.Length -lt 2MB })
     Write-Note ("{0:N0} file(s) to search  ({1})" -f $files.Count, (Format-Elapsed $watch.Elapsed))
@@ -518,12 +578,42 @@ function Find-UnlistedFdoCarriers {
     $known = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($p in $FdoVersionPaths) { [void]$known.Add($p) }
 
-    return @($hits | ForEach-Object {
-        $rel = $_.Path.Substring($root.Length + 1)
-        if (-not $known.Contains($rel)) {
-            [pscustomobject]@{ Path = $rel; Sample = $_.Line.Trim() }
-        }
+    $unlisted = @(foreach ($hit in $hits) {
+        $rel = $hit.Path.Substring($root.Length + 1)
+        if ($known.Contains($rel)) { continue }
+        if (Test-IgnoredPath -RelativePath $rel -Ignored $ignored) { continue }
+        [pscustomobject]@{ Path = $rel; Sample = $hit.Line.Trim() }
     })
+    return $unlisted
+}
+
+function Invoke-MapGuideStamp {
+    # The tree's own stampers, run from the MgDev root with the exact version. This deliberately does
+    # not go through mapguide_<cfg>_setup.bat: that wrapper adds the SVN revision as the fourth
+    # component, which is how a build is prepared but not what a baseline bump means.
+    param([pscustomobject]$Target)
+
+    $mgDev = Join-Path $RepoRoot 'MgDev'
+    if (-not (Test-Path -LiteralPath $mgDev)) { throw 'MgDev is not present; nothing to stamp.' }
+    if (-not $PSCmdlet.ShouldProcess("MgDev ($($Target.Full))", 'stamp MapGuide')) { return }
+
+    foreach ($step in @(
+            @{ Name = 'updateversion.vbs'; Command = "cscript //nologo updateversion.vbs /major:$($Target.Major) /minor:$($Target.Minor) /point:$($Target.Point) /build:$($Target.Build)" },
+            @{ Name = 'stampassemblies.bat'; Command = "call stampassemblies.bat $($Target.Full)" })) {
+
+        Write-Field 'Running' "MgDev\$($step.Name)"
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        Push-Location $mgDev
+        try {
+            & $env:ComSpec /c $step.Command
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { throw "$($step.Name) failed with exit code $code" }
+        }
+        finally {
+            Pop-Location
+        }
+        Write-Field 'Finished' "$($step.Name) in $(Format-Elapsed $watch.Elapsed) (exit $code)" ([ConsoleColor]::Green)
+    }
 }
 
 function Update-MapGuideWrappers {
@@ -569,7 +659,18 @@ function Get-CurrentMapGuideVersion {
     if (-not ($major -and $minor -and $point)) {
         throw 'Could not read MG_VER_MAJOR/MG_VER_MINOR/MG_VER_BUILD from mapguide_rel.bat'
     }
-    [pscustomobject]@{ Major = $major; Minor = $minor; Point = $point; Text = "$major.$minor.$point" }
+
+    # What the tree actually carries now: updateversion.vbs stamps this header, and every .rc file
+    # with it, so it says whether the setup script still has work to do even when the wrappers have
+    # already been edited.
+    $stamped = $null
+    $header = Join-Path $RepoRoot 'MgDev\Common\ProductVersion.h'
+    if (Test-Path -LiteralPath $header) {
+        $match = [regex]::Match((Read-TextFile -Path $header).Text, 'const STRING ProductVersion = L"([^"]*)"')
+        if ($match.Success) { $stamped = $match.Groups[1].Value }
+    }
+
+    [pscustomobject]@{ Major = $major; Minor = $minor; Point = $point; Base = "$major.$minor.$point"; Stamped = $stamped }
 }
 
 function Get-CurrentFdoVersion {
@@ -589,29 +690,35 @@ $totalWatch = [Diagnostics.Stopwatch]::StartNew()
 
 Write-Section 'Bump-Version'
 Write-Field 'Repository' $RepoRoot
-Write-Field 'MapGuide requested' $MapGuideVersion
-Write-Field 'FDO requested' $FdoVersion
+Write-Field 'MapGuide requested' $(if ($MapGuideVersion) { $MapGuideVersion } else { 'not supplied - unchanged' })
+Write-Field 'FDO requested' $(if ($FdoVersion) { $FdoVersion } else { 'not supplied - unchanged' })
 Write-Field 'FDO trees' ($FdoTrees -join ', ')
 Write-Field 'FDO carrier files' ("$($FdoVersionPaths.Count) per tree (captured list)")
-Write-Field 'MapGuide setup' $(if ($SkipMapGuideSetup) { 'skipped (-SkipMapGuideSetup)' } else { $Configuration })
+Write-Field 'MapGuide stamp' $(if ($SkipMapGuideStamp) { 'skipped (-SkipMapGuideStamp)' } else { 'MgDev\updateversion.vbs + MgDev\stampassemblies.bat' })
 Write-Field 'Deep scan' $(if ($Scan) { 'yes (-Scan)' } else { 'no (-Scan to verify the list)' })
 Write-Field 'Installer' $InstallerWxs
 if ($WhatIfPreference) {
     Write-Field 'Mode' 'WhatIf - nothing will be written' ([ConsoleColor]::Cyan)
 }
 
-$mapGuideParts = $MapGuideVersion.Split('.')
-if ($mapGuideParts[3] -ne '0') {
-    throw "-MapGuideVersion $MapGuideVersion must end in .0: mapguide_<cfg>_setup.bat stamps the SVN revision as the fourth component, so the base version is major.minor.point."
+if (-not ($MapGuideVersion -or $FdoVersion -or $Scan)) {
+    throw 'Nothing to do: pass -MapGuideVersion, -FdoVersion or both (or -Scan to check the carrier list).'
 }
 
 Write-Section 'Current versions'
 $currentMapGuide = Get-CurrentMapGuideVersion
-$targetMapGuide = [pscustomobject]@{ Major = $mapGuideParts[0]; Minor = $mapGuideParts[1]; Point = $mapGuideParts[2]; Text = "$($mapGuideParts[0]).$($mapGuideParts[1]).$($mapGuideParts[2])" }
-Write-Field 'MapGuide wrappers' $currentMapGuide.Text
+$targetMapGuide = if ($MapGuideVersion) {
+    $p = $MapGuideVersion.Split('.')
+    [pscustomobject]@{ Major = $p[0]; Minor = $p[1]; Point = $p[2]; Build = $p[3]; Base = "$($p[0]).$($p[1]).$($p[2])"; Full = $MapGuideVersion }
+}
+else {
+    $currentMapGuide
+}
+Write-Field 'MapGuide wrappers' $currentMapGuide.Base
 foreach ($wrapper in $MapGuideWrappers) {
     Write-Note $wrapper
 }
+Write-Field 'MapGuide tree' $(if ($currentMapGuide.Stamped) { "$($currentMapGuide.Stamped) (MgDev\Common\ProductVersion.h)" } else { '(ProductVersion.h not found)' })
 
 $currentFdoVersions = [ordered]@{}
 foreach ($tree in $FdoTrees) {
@@ -624,26 +731,48 @@ foreach ($tree in $FdoTrees) {
     Write-Field "FDO $tree" $found
 }
 
-if ($currentFdoVersions.Count -eq 0) { throw 'Neither FDO working copy is present.' }
+if (($FdoVersion -or $Scan) -and $currentFdoVersions.Count -eq 0) { throw 'Neither FDO working copy is present.' }
 $distinctFdo = @($currentFdoVersions.Values | Where-Object { $_ } | Select-Object -Unique)
 if ($distinctFdo.Count -gt 1) {
-    throw "The FDO working copies disagree about the current version: $(($currentFdoVersions.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '). Bring them in step first."
+    $detail = ($currentFdoVersions.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+    if ($FdoVersion -or $Scan) {
+        throw "The FDO working copies disagree about the current version: $detail. Bring them in step first."
+    }
+    Write-Warning "The FDO working copies disagree about the current version: $detail. This run leaves FDO alone, so it continues."
 }
-$currentFdo = if ($distinctFdo.Count -eq 1) { ConvertTo-FdoLiterals -Version $distinctFdo[0] } else { $null }
-$targetFdo = ConvertTo-FdoLiterals -Version $FdoVersion
+$currentFdo = if ($distinctFdo.Count -ge 1) { ConvertTo-FdoLiterals -Version $distinctFdo[0] } else { $null }
+$targetFdo = if ($FdoVersion) { ConvertTo-FdoLiterals -Version $FdoVersion } else { $currentFdo }
+$fdoMoves = [bool]($currentFdo -and $targetFdo -and $currentFdo.Dotted -ne $targetFdo.Dotted)
+
+$wrapperMoves = [bool]($MapGuideVersion -and $currentMapGuide.Base -ne $targetMapGuide.Base)
+# The wrappers only carry three components, so a tree stamped 4.0.1.<revision> is already "at" 4.0.1
+# as far as they are concerned; compare the exact version to decide whether the stampers must run.
+$treeMoves = [bool]($MapGuideVersion -and $currentMapGuide.Stamped -and $currentMapGuide.Stamped -ne $targetMapGuide.Full)
+$mapGuideMoves = $wrapperMoves -or $treeMoves
 
 Write-Section 'Plan'
-Write-Field 'MapGuide' "$($currentMapGuide.Text) -> $($targetMapGuide.Text)  (binaries are stamped $($targetMapGuide.Text).<revision>)"
-Write-Field 'FDO' "$(if ($currentFdo) { $currentFdo.Dotted } else { '(unknown)' }) -> $($targetFdo.Dotted)  (provider names stay $($targetFdo.Version.Split('.')[0]).$($targetFdo.Version.Split('.')[1]))"
-Write-Note "FDO rewrites four-component $($targetFdo.Dotted), $($targetFdo.Comma) and $($targetFdo.Padded), plus three-component $($targetFdo.Short), in the captured carrier list."
-Write-Note 'Per-file detail is available with -Verbose.'
+if ($mapGuideMoves) {
+    Write-Field 'MapGuide constants' $(if ($wrapperMoves) { "$($currentMapGuide.Base) -> $($targetMapGuide.Base)" } else { "$($currentMapGuide.Base) (already set)" }) ([ConsoleColor]::Cyan)
+    Write-Field 'MapGuide tree' "$(if ($currentMapGuide.Stamped) { $currentMapGuide.Stamped } else { '(unknown)' }) -> $($targetMapGuide.Full)  (updateversion.vbs, stampassemblies.bat)" ([ConsoleColor]::Cyan)
+}
+else {
+    Write-Field 'MapGuide' "$($currentMapGuide.Base) (unchanged; the tree carries $($currentMapGuide.Stamped))"
+}
+if ($fdoMoves) {
+    Write-Field 'FDO' "$($currentFdo.Dotted) -> $($targetFdo.Dotted)  (provider names stay $($targetFdo.Version.Split('.')[0]).$($targetFdo.Version.Split('.')[1]))" ([ConsoleColor]::Cyan)
+    Write-Note "FDO rewrites four-component $($targetFdo.Dotted), $($targetFdo.Comma) and $($targetFdo.Padded), plus three-component $($targetFdo.Short), in the captured carrier list."
+    Write-Note 'Per-file detail is available with -Verbose.'
+}
+else {
+    Write-Field 'FDO' "$(if ($currentFdo) { $currentFdo.Dotted } else { '(unknown)' }) (unchanged)"
+}
 
 # ---------------------------------------------------------------------------
 # FDO: stamp the captured carrier list in both working copies.
 # ---------------------------------------------------------------------------
 
 $fdoResults = @()
-if ($currentFdo -and $currentFdo.Dotted -ne $targetFdo.Dotted) {
+if ($fdoMoves) {
     foreach ($tree in @($currentFdoVersions.Keys)) {
         Write-Section "FDO: $tree"
         $result = Update-FdoTree -Tree $tree -Current $currentFdo -Target $targetFdo
@@ -669,7 +798,12 @@ if ($currentFdo -and $currentFdo.Dotted -ne $targetFdo.Dotted) {
 }
 else {
     Write-Section 'FDO'
-    Write-Field 'Action' 'already at the requested version; nothing to stamp'
+    if ($FdoVersion) {
+        Write-Field 'Action' 'already at the requested version; nothing to stamp'
+    }
+    else {
+        Write-Field 'Action' 'not requested; FDO and the installer keep the version they carry'
+    }
 }
 
 if ($Scan) {
@@ -677,6 +811,10 @@ if ($Scan) {
     foreach ($tree in $FdoTrees) {
         if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $tree))) { continue }
         Write-Section "Deep scan: $tree"
+        if (-not $currentFdo) {
+            Write-Field 'Action' 'skipped; the version the trees carry could not be read from providers.xml'
+            continue
+        }
         $found = @(Find-UnlistedFdoCarriers -Tree $tree -Current $currentFdo)
         Write-Field 'Carriers outside the list' $found.Count $(if ($found.Count -gt 0) { [ConsoleColor]::Yellow } else { [ConsoleColor]::Green })
         $unlisted += $found
@@ -698,7 +836,7 @@ Write-Section 'Installer and MapGuide version constants'
 
 $installerText = Read-TextFile -Path $InstallerWxs
 $installerVersion = [regex]::Match($installerText.Text, '<Property Id="FDO_VERSION"[^>]*Value="([^"]*)"').Groups[1].Value
-if (Update-InstallerFdoVersion -Current $currentFdo -Target $targetFdo) {
+if ($fdoMoves -and (Update-InstallerFdoVersion -Current $currentFdo -Target $targetFdo)) {
     Write-Field 'Installer FDO_VERSION' "$installerVersion -> $($targetFdo.Dotted)" ([ConsoleColor]::Green)
 }
 else {
@@ -707,58 +845,36 @@ else {
 $small = [regex]::Match($installerText.Text, '<Property Id="FDO_VERSION_SMALL"[^>]*Value="([^"]*)"').Groups[1].Value
 Write-Note "FDO_VERSION_SMALL stays $small - it forms the OSGeo.<provider>.$small names FdoRegUtil registers."
 
-if ($currentMapGuide.Text -ne $targetMapGuide.Text) {
+if ($wrapperMoves) {
     $changed = Update-MapGuideWrappers -Current $currentMapGuide -Target $targetMapGuide
-    Write-Field 'MapGuide wrappers' "$($currentMapGuide.Text) -> $($targetMapGuide.Text) in $changed file(s)" ([ConsoleColor]::Green)
+    Write-Field 'MapGuide wrappers' "$($currentMapGuide.Base) -> $($targetMapGuide.Base) in $changed file(s)" ([ConsoleColor]::Green)
     $MapGuideWrappers | ForEach-Object { Write-Note "  $_" }
 }
 else {
-    Write-Field 'MapGuide wrappers' "$($currentMapGuide.Text) (unchanged)"
+    Write-Field 'MapGuide wrappers' "$($currentMapGuide.Base) (unchanged)"
 }
 
 # ---------------------------------------------------------------------------
-# MapGuide: let the tree's own scripts do the stamping.
+# MapGuide: stamp MgDev with the exact version, through its own two scripts.
 # ---------------------------------------------------------------------------
-
-$setupScripts = switch ($Configuration) {
-    'Release' { @('mapguide_rel_setup.bat') }
-    'Debug'   { @('mapguide_dbg_setup.bat') }
-    'Both'    { @('mapguide_rel_setup.bat', 'mapguide_dbg_setup.bat') }
-}
 
 Write-Section 'MapGuide stamping'
-if ($SkipMapGuideSetup -or $WhatIfPreference) {
-    Write-Field 'Action' 'skipped; run mapguide_<cfg>_setup.bat to stamp the tree'
+if (-not $mapGuideMoves) {
+    Write-Field 'Action' "nothing to stamp; the tree already carries $($currentMapGuide.Stamped)"
+    Write-Note 'Run mapguide_<cfg>_setup.bat after rebuilding FDO to restage it into MgDev\Oem\FDO.'
+}
+elseif ($SkipMapGuideStamp -or $WhatIfPreference) {
+    Write-Field 'Action' 'skipped; run the stampers by hand if you want them'
+    Write-Note "The tree keeps $($currentMapGuide.Stamped)."
 }
 else {
-    foreach ($script in $setupScripts) {
-        if (-not $PSCmdlet.ShouldProcess($script, 'run MapGuide setup')) { continue }
-        Write-Field 'Running' $script
-        Write-Note 'Its output follows (updateversion.vbs, stampassemblies.bat and the FDO staging).'
-        Write-Host ''
-        $watch = [Diagnostics.Stopwatch]::StartNew()
-        Push-Location $RepoRoot
-        try {
-            # The setup scripts end in `pause`; an empty stdin makes that a no-op.
-            & $env:ComSpec /c "call `"$script`" < nul"
-            $code = $LASTEXITCODE
-            if ($code -ne 0) { throw "$script failed with exit code $code" }
-        }
-        finally {
-            Pop-Location
-        }
-        Write-Host ''
-        Write-Field 'Finished' "$script in $(Format-Elapsed $watch.Elapsed) (exit $code)" ([ConsoleColor]::Green)
-    }
+    Invoke-MapGuideStamp -Target $targetMapGuide
 
     $productVersion = Join-Path $RepoRoot 'MgDev\Common\ProductVersion.h'
     if (Test-Path -LiteralPath $productVersion) {
         $stamped = [regex]::Match((Read-TextFile -Path $productVersion).Text, 'const STRING ProductVersion = L"([^"]*)"').Groups[1].Value
-        Write-Field 'Stamped ProductVersion' $stamped ([ConsoleColor]::Green)
-    }
-    $revisionFile = Join-Path $RepoRoot ("mapguide_{0}{1}_revision.txt" -f $targetMapGuide.Major, $targetMapGuide.Minor)
-    if (Test-Path -LiteralPath $revisionFile) {
-        Write-Field 'Revision file' ("{0} = {1}" -f (Split-Path $revisionFile -Leaf), (Get-Content -LiteralPath $revisionFile | Select-Object -First 1))
+        $color = if ($stamped -eq $targetMapGuide.Full) { [ConsoleColor]::Green } else { [ConsoleColor]::Yellow }
+        Write-Field 'Stamped ProductVersion' $stamped $color
     }
 }
 
@@ -767,18 +883,30 @@ else {
 # ---------------------------------------------------------------------------
 
 Write-Section 'Summary'
-foreach ($result in $fdoResults) {
-    Write-Field "FDO $($result.Tree)" ("{0} of {1} carrier file(s) rewritten" -f $result.FromList, $result.Known)
+if ($fdoMoves) {
+    foreach ($result in $fdoResults) {
+        Write-Field "FDO $($result.Tree)" ("{0} of {1} carrier file(s) rewritten" -f $result.FromList, $result.Known) ([ConsoleColor]::Green)
+    }
+    Write-Field 'FDO version' "$($currentFdo.Dotted) -> $($targetFdo.Dotted)"
+    Write-Field 'FDO provider names' "$($targetFdo.Version.Split('.')[0]).$($targetFdo.Version.Split('.')[1]) (unchanged)"
+    Write-Field 'Installer FDO_VERSION' $targetFdo.Dotted
 }
-Write-Field 'FDO version' $targetFdo.Dotted
-Write-Field 'FDO provider names' "$($targetFdo.Version.Split('.')[0]).$($targetFdo.Version.Split('.')[1]) (unchanged)"
-Write-Field 'Installer FDO_VERSION' $targetFdo.Dotted
-Write-Field 'MapGuide base version' $targetMapGuide.Text
+else {
+    Write-Field 'FDO version' "$(if ($currentFdo) { $currentFdo.Dotted } else { '(unknown)' }) (unchanged)"
+}
+Write-Field 'MapGuide version' $(if ($mapGuideMoves) { "$($currentMapGuide.Stamped) -> $($targetMapGuide.Full)" } else { "$($currentMapGuide.Base) (unchanged)" })
 Write-Field 'Total elapsed' (Format-Elapsed $totalWatch.Elapsed)
 
-Write-Host ''
-Write-Host '  Nothing has been rebuilt. Next steps:' -ForegroundColor Yellow
-Write-Note 'fdo_rel.bat                 rebuild FDO so the binaries carry the new version'
-Write-Note 'fdo_dbg.bat                 the same for the Debug tree, if you build Debug'
-Write-Note 'mapguide_rel_setup.bat      restage the rebuilt FDO into MgDev\Oem\FDO'
-Write-Note 'mapguide_rel.bat            rebuild MapGuide (BUILD_INSTALLER=1 for the MSI)'
+if ($fdoMoves -or $mapGuideMoves) {
+    Write-Host ''
+    Write-Host '  Nothing has been rebuilt. Next steps:' -ForegroundColor Yellow
+    if ($fdoMoves) {
+        Write-Note 'fdo_rel.bat                 rebuild FDO so the binaries carry the new version'
+        Write-Note 'fdo_dbg.bat                 the same for the Debug tree, if you build Debug'
+        Write-Note 'mapguide_rel_setup.bat      restage the rebuilt FDO into MgDev\Oem\FDO'
+    }
+    elseif ($mapGuideMoves) {
+        Write-Note 'mapguide_rel_setup.bat      before a build: restages FDO and restamps the tree with the SVN revision'
+    }
+    Write-Note 'mapguide_rel.bat            rebuild MapGuide (BUILD_INSTALLER=1 for the MSI)'
+}

@@ -67,36 +67,57 @@ script, so its version is literal text in the `.rc` files, the `StampVer` comman
 `.vcxproj`/`.vcproj` files, the provider info headers, the managed override assemblies, the
 `providers.xml` registries, the `/usr/local/fdo-4.2.0` install prefix in the build scripts and the
 CMake variables, while MapGuide has `MgDev\updateversion.vbs` and `MgDev\stampassemblies.bat`, which
-`mapguide_<cfg>_setup.bat` drives.
+`mapguide_<cfg>_setup.bat` drives for a build and `Bump-Version.ps1` drives directly for a bump.
 
 `Bump-Version.ps1` establishes a new baseline for both. It sweeps the versioned files of both FDO
 working copies, sets the installer's `FDO_VERSION` property and the `MG_VER_*` constants the MapGuide
-wrappers use, then runs the MapGuide setup script so the stamping stays in the tree's own hands:
+wrappers use, and then stamps the MapGuide tree with the version it was given, through the tree's own
+`MgDev\updateversion.vbs` and `MgDev\stampassemblies.bat` run from the MgDev root. `-MapGuideVersion
+4.0.1.0` therefore leaves the tree carrying exactly `4.0.1.0` — the `.rc` files,
+`Common\ProductVersion.h` and the managed assembly versions all say it — and the stamped
+`ProductVersion` is read back afterwards. The bump does not go through `mapguide_<cfg>_setup.bat`,
+because that wrapper appends the SVN revision as the fourth component; it keeps that behaviour for
+when it is run on its own as the build's preparation step, which turns the same tree into
+`4.0.1.<revision>`.
 
 ```
 .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0 -WhatIf   # review first
 .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0
+.\Bump-Version.ps1 -FdoVersion 4.2.1.0                                    # FDO only
+.\Bump-Version.ps1 -MapGuideVersion 4.0.1.0                               # MapGuide only
 ```
+
+Either product can be bumped on its own: a version that is omitted leaves that product where it
+is, and the run then does not touch its files at all — a MapGuide-only bump rewrites the four
+`MG_VER_*` constants and stamps `MgDev`, and touches nothing under `fdo-dbg`/`fdo-rel`; an FDO-only
+bump rewrites the carrier list and the installer's `FDO_VERSION` and leaves `MgDev` alone, since the
+MapGuide stamping only runs when `-MapGuideVersion` is given and the tree is not already carrying it.
+`-SkipMapGuideStamp` writes the constants and leaves the tree as it is.
 
 Which FDO files carry the version is not guessed and not searched for at run time: the carrier list
 is captured in the script, taken from the commit that bumped FDO's baseline to 4.2 (r7529,
 "Ticket #926: Update FDO Trunk version to 4.2"), extended with what was added afterwards and cut
 down to the files that exist today. Only those files are read and stamped, so a bump takes about
 ten seconds instead of a sweep of both working copies.
+
 The four-component forms (`4.2.0.0`, `4,2,0,0`, `4.2.0.0000`) and the three-component form
 (`/usr/local/fdo-4.2.0`, `AC_INIT(FDO,...,4.2.0,...)`, `FDORELNUMBER=4.2.0`) are all rewritten
 there. Files that look similar but are not FDO's version are deliberately absent from the list —
 `Thirdparty/gdal`'s "giflib 4.2.0" notes, and `Thirdparty/openssl`'s IA-64 assembler where
 `4,2,0,0` is an `ar.pfs` register allocation. `-Scan` re-searches the working copies for any
 carrier the list has missed and reports it, which is the thing to run after adding files to the
-trees; it reads every text file outside `Thirdparty` and now takes about ten seconds per tree.
+trees; it takes about ten seconds per tree. It asks `svn status --no-ignore` what the working copy
+ignores, so the copies a build writes into the trees (the `providers.xml` copies under each
+provider's `Bin`, `deps.json`, MSBuild caches, `mc`-generated `.rc` files) do not drown the real
+hits, and it requires a version number to stand on its own, so numbers like `4.2.15` do not match.
 
-`-MapGuideVersion` takes a trailing `.0` because the setup script stamps the SVN revision as the
-fourth component, so the binaries become `4.0.1.<revision>`. FDO provider names are `major.minor`
-only (`OSGeo.SDF.4.2`), so an FDO bump changes the version fields without renaming a provider, and
-the installer's `FDO_VERSION_SMALL` stays at `4.2`. Nothing is rebuilt: run `fdo_rel.bat` (and
-`fdo_dbg.bat` for Debug), then `mapguide_rel_setup.bat` again to restage the rebuilt FDO, then
-`mapguide_rel.bat`.
+`-MapGuideVersion` is stamped verbatim, all four components of it. The four wrappers take only the
+first three (`MG_VER_MAJOR`/`MG_VER_MINOR`/`MG_VER_BUILD`), so the revision is added back the next
+time `mapguide_<cfg>_setup.bat` runs as part of preparing a build — until then the tree carries the
+exact version the bump asked for. FDO provider names are `major.minor` only (`OSGeo.SDF.4.2`), so an
+FDO bump changes the version fields without renaming a provider, and the installer's
+`FDO_VERSION_SMALL` stays at `4.2`. Nothing is rebuilt: run `fdo_rel.bat` (and `fdo_dbg.bat` for
+Debug), then `mapguide_rel_setup.bat` again to restage the rebuilt FDO, then `mapguide_rel.bat`.
 
 ## Limitations
 
