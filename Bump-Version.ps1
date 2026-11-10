@@ -42,6 +42,15 @@
     binaries that carry the new version, then mapguide_rel_setup.bat (again, to
     restage the rebuilt FDO) and mapguide_rel.bat.
 
+    The MapGuide install tree is /usr/local/mapguideopensource-<major>.<minor>.<point>,
+    so a bump renames it, and the Linux test harness in MgDev names that tree in
+    four places (Bindings\src\Test\Java\build.xml, UnitTest\run_server_tests.sh,
+    UnitTest\run_web_tests.sh and prepare_test_pack.sh). Those files now take
+    --install-dir or discover the installed tree, so a current working copy has
+    nothing for a bump to rewrite; the script checks all four every run and
+    rewrites a path that a stale working copy still pins to another version. See
+    $MapGuideInstallPathPaths.
+
 .PARAMETER MapGuideVersion
     The exact MapGuide version to stamp, e.g. 4.0.1.0. The tree is stamped with
     all four components, so the .rc files, Common\ProductVersion.h and the
@@ -69,6 +78,10 @@
     ignores (build output, generated .rc files), which takes about ten seconds
     per tree, so it is off by default. It also runs on its own, without either
     version, to check the current baseline.
+
+    The MgDev install-path files are checked on every run rather than only under
+    -Scan, because they are four files and the check is a regex over each: a path
+    pinned to a version this run does not target is reported either way.
 
 .EXAMPLE
     .\Bump-Version.ps1 -MapGuideVersion 4.0.1.0 -FdoVersion 4.2.1.0
@@ -127,6 +140,28 @@ $MapGuideWrappers = @(
     'mapguide_rel.bat'
 )
 $InstallerWxs = Join-Path $RepoRoot 'Installer\Installers\MapGuide\MapGuide.wxs'
+
+# The files in MgDev that used to name the MapGuide install tree as a literal path.
+#
+# The tree is /usr/local/mapguideopensource-<major>.<minor>.<point>, so a baseline bump renames it,
+# and these four files are the Linux test harness: prepare_test_pack.sh builds the Java runner
+# against the install's MapGuideApi.jar (MgDev\Bindings\src\Test\Java\build.xml reads that property
+# and the install's lib64 directories), and the two UnitTest\run_*_tests.sh scripts default their
+# webconfig, CS-Map dictionary and PHP paths from the same tree. A bump that renames the install
+# without moving them breaks the test pack with an ant "'.../webserverextensions/www/WEB-INF/lib'
+# does not exist" immediately after the per-distro build scripts run "Preparing test pack".
+#
+# They no longer carry the version: each takes --install-dir, or discovers the installed tree, so a
+# bump has nothing to stamp here and the rewrite below is a no-op on them. They stay in this list
+# for two reasons - a working copy that has not taken that change yet still holds the literal, and a
+# literal that comes back here is a regression, which this script reports rather than hides. Treat
+# "derived" as the healthy state and "rewritten"/"stale" as a working copy that needs the fix.
+$MapGuideInstallPathPaths = @(
+    'Bindings\src\Test\Java\build.xml',
+    'UnitTest\run_server_tests.sh',
+    'UnitTest\run_web_tests.sh',
+    'prepare_test_pack.sh'
+)
 
 # Binary content, skipped by -Scan.
 $FdoBinaryPattern = '\.(png|jpe?g|gif|ico|bmp|dll|exe|so|dylib|lib|a|o|obj|zip|gz|bz2|xz|7z|tar|cab|msi|nupkg|jar|class|pdb|PDB|cat|jgw|prj|dbf|shp|shx|cpg|tif|tiff|dt1|dt2|aux|ecw|mdb|bin|chm|pdf|woff2?|ttf|eot|svg)$'
@@ -638,6 +673,55 @@ function Update-MapGuideWrappers {
     return $changed
 }
 
+function Get-MapGuideInstallPaths {
+    # The /usr/local/mapguideopensource-<version> spellings the text still holds. None means the file
+    # derives the install tree (--install-dir or discovery), which is the state a bump should find.
+    param([string]$Text)
+    return @([regex]::Matches($Text, '(?<=/usr/local/mapguideopensource-)\d+\.\d+\.\d+') |
+        ForEach-Object { $_.Value } | Select-Object -Unique)
+}
+
+function Update-MapGuideInstallPaths {
+    # Rewrites the pinned install tree in the known MgDev carriers to the target version. A file that
+    # derives the path has nothing to rewrite and is reported as such; that is not a failure, it is
+    # the post-fix state. Only writes when a MapGuide version was requested, so an FDO-only bump
+    # reports drift instead of silently editing MgDev.
+    param([pscustomobject]$Target, [bool]$Apply)
+
+    $results = New-Object System.Collections.ArrayList
+    $mgDev = Join-Path $RepoRoot 'MgDev'
+    foreach ($rel in $MapGuideInstallPathPaths) {
+        $path = Join-Path $mgDev $rel
+        if (-not (Test-Path -LiteralPath $path)) {
+            [void]$results.Add([pscustomobject]@{ Path = $rel; State = 'absent'; From = @(); To = @() })
+            continue
+        }
+
+        $file = Read-TextFile -Path $path
+        $found = @(Get-MapGuideInstallPaths -Text $file.Text)
+        if ($found.Count -eq 0) {
+            [void]$results.Add([pscustomobject]@{ Path = $rel; State = 'derived'; From = @(); To = @() })
+            continue
+        }
+
+        $text = [regex]::Replace($file.Text, '(?<=/usr/local/mapguideopensource-)\d+\.\d+\.\d+', $Target.Base)
+        if ($text -eq $file.Text) {
+            [void]$results.Add([pscustomobject]@{ Path = $rel; State = 'current'; From = $found; To = @($Target.Base) })
+            continue
+        }
+        if (-not $Apply) {
+            [void]$results.Add([pscustomobject]@{ Path = $rel; State = 'stale'; From = $found; To = @($Target.Base) })
+            continue
+        }
+        $written = $PSCmdlet.ShouldProcess($path, "set the MapGuide install tree to $($Target.Base)")
+        if ($written) {
+            Save-TextFile -Path $path -Text $text -Encoding $file.Encoding
+        }
+        [void]$results.Add([pscustomobject]@{ Path = $rel; State = $(if ($written) { 'rewritten' } else { 'planned' }); From = $found; To = @($Target.Base) })
+    }
+    return $results
+}
+
 function Update-InstallerFdoVersion {
     param([pscustomobject]$Current, [pscustomobject]$Target)
 
@@ -695,6 +779,7 @@ Write-Field 'FDO requested' $(if ($FdoVersion) { $FdoVersion } else { 'not suppl
 Write-Field 'FDO trees' ($FdoTrees -join ', ')
 Write-Field 'FDO carrier files' ("$($FdoVersionPaths.Count) per tree (captured list)")
 Write-Field 'MapGuide stamp' $(if ($SkipMapGuideStamp) { 'skipped (-SkipMapGuideStamp)' } else { 'MgDev\updateversion.vbs + MgDev\stampassemblies.bat' })
+Write-Field 'MapGuide install paths' ("$($MapGuideInstallPathPaths.Count) MgDev file(s) checked for a pinned /usr/local/mapguideopensource tree")
 Write-Field 'Deep scan' $(if ($Scan) { 'yes (-Scan)' } else { 'no (-Scan to verify the list)' })
 Write-Field 'Installer' $InstallerWxs
 if ($WhatIfPreference) {
@@ -854,6 +939,35 @@ else {
     Write-Field 'MapGuide wrappers' "$($currentMapGuide.Base) (unchanged)"
 }
 
+# The MgDev files that name the install tree. A file that derives the path is the healthy state;
+# one that still pins an older tree is rewritten when a MapGuide version was requested, and merely
+# reported otherwise (so -FdoVersion alone shows the drift without touching MgDev).
+$installPathResults = @(Update-MapGuideInstallPaths -Target $targetMapGuide -Apply ([bool]$MapGuideVersion))
+$rewritten = @($installPathResults | Where-Object { $_.State -eq 'rewritten' })
+$planned = @($installPathResults | Where-Object { $_.State -eq 'planned' })
+$derived = @($installPathResults | Where-Object { $_.State -eq 'derived' })
+$stale = @($installPathResults | Where-Object { $_.State -eq 'stale' })
+$upToDate = @($installPathResults | Where-Object { $_.State -eq 'current' })
+$absent = @($installPathResults | Where-Object { $_.State -eq 'absent' })
+$installPathColor = if ($stale.Count -gt 0) { [ConsoleColor]::Yellow } elseif ($rewritten.Count -gt 0) { [ConsoleColor]::Green } elseif ($planned.Count -gt 0) { [ConsoleColor]::Cyan } else { [ConsoleColor]::Gray }
+$installPathDetail = "{0} of {1} file(s) derive the tree; {2} pin {3}; {4} rewritten; {5} stale; {6} absent" -f `
+    $derived.Count, $MapGuideInstallPathPaths.Count, $upToDate.Count, $targetMapGuide.Base, $rewritten.Count, $stale.Count, $absent.Count
+if ($planned.Count -gt 0) { $installPathDetail += "; $($planned.Count) would be rewritten" }
+Write-Field 'MapGuide install paths' $installPathDetail $installPathColor
+foreach ($result in @($rewritten) + @($planned) + @($upToDate) + @($stale)) {
+    $from = ($result.From | Select-Object -Unique) -join ', '
+    switch ($result.State) {
+        'rewritten' { Write-Note ("  {0}  {1} -> {2}" -f $result.Path, $from, $result.To[0]) ([ConsoleColor]::Green) }
+        'planned' { Write-Note ("  {0}  {1} -> {2} (not written: -WhatIf)" -f $result.Path, $from, $result.To[0]) ([ConsoleColor]::Cyan) }
+        'current' { Write-Note ("  {0}  {1} (already the target)" -f $result.Path, $from) }
+        'stale' { Write-Note ("  {0}  {1} -> {2} (not rewritten: no -MapGuideVersion)" -f $result.Path, $from, $result.To[0]) ([ConsoleColor]::Yellow) }
+    }
+}
+if ($stale.Count -gt 0) {
+    Write-Note 'A MapGuide install path is pinned to a version this bump does not target. Pass -MapGuideVersion,' ([ConsoleColor]::Yellow)
+    Write-Note 'or run the version those files name, before building the test pack.' ([ConsoleColor]::Yellow)
+}
+
 # ---------------------------------------------------------------------------
 # MapGuide: stamp MgDev with the exact version, through its own two scripts.
 # ---------------------------------------------------------------------------
@@ -895,6 +1009,7 @@ else {
     Write-Field 'FDO version' "$(if ($currentFdo) { $currentFdo.Dotted } else { '(unknown)' }) (unchanged)"
 }
 Write-Field 'MapGuide version' $(if ($mapGuideMoves) { "$($currentMapGuide.Stamped) -> $($targetMapGuide.Full)" } else { "$($currentMapGuide.Base) (unchanged)" })
+Write-Field 'MapGuide install paths' $(if ($rewritten.Count -gt 0) { "$($rewritten.Count) MgDev file(s) rewritten to $($targetMapGuide.Base)" } elseif ($planned.Count -gt 0) { "$($planned.Count) MgDev file(s) would be rewritten to $($targetMapGuide.Base)" } elseif ($stale.Count -gt 0) { "$($stale.Count) MgDev file(s) pinned to another version (not rewritten)" } else { "$($derived.Count) derive the tree, $($upToDate.Count) pin $($targetMapGuide.Base); nothing to rewrite" }) $(if ($stale.Count -gt 0) { [ConsoleColor]::Yellow } elseif ($rewritten.Count -gt 0) { [ConsoleColor]::Green } elseif ($planned.Count -gt 0) { [ConsoleColor]::Cyan } else { [ConsoleColor]::Gray })
 Write-Field 'Total elapsed' (Format-Elapsed $totalWatch.Elapsed)
 
 if ($fdoMoves -or $mapGuideMoves) {

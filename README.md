@@ -94,6 +94,19 @@ bump rewrites the carrier list and the installer's `FDO_VERSION` and leaves `MgD
 MapGuide stamping only runs when `-MapGuideVersion` is given and the tree is not already carrying it.
 `-SkipMapGuideStamp` writes the constants and leaves the tree as it is.
 
+The MapGuide install tree is named after the version (`/usr/local/mapguideopensource-<major>.<minor>.<point>`),
+so a bump renames it — and the Linux test harness under `MgDev` used to say it outright, in
+`prepare_test_pack.sh` (the Java runner is built against the install's `MapGuideApi.jar`),
+`UnitTest\run_server_tests.sh`, `UnitTest\run_web_tests.sh` and `Bindings\src\Test\Java\build.xml`.
+Renaming the install without moving those broke the test pack with ant's `'.../webserverextensions/www/WEB-INF/lib'
+does not exist` immediately after the per-distro build script printed "Preparing test pack". They
+take `--install-dir`, or discover the installed tree, now — so a current working copy has nothing
+for a bump to rewrite. The script still checks all four on every run (`$MapGuideInstallPathPaths`)
+and rewrites any path a working copy still pins to another version, because an `svn update` that
+lags the change would otherwise reintroduce the failure without a word. "Derive the tree" is the
+healthy report; "rewritten" and "stale" mean the working copy needs the fix, and a stale path is
+additionally called out, since only `-MapGuideVersion` rewrites them.
+
 Which FDO files carry the version is not guessed and not searched for at run time: the carrier list
 is captured in the script, taken from the commit that bumped FDO's baseline to 4.2 (r7529,
 "Ticket #926: Update FDO Trunk version to 4.2"), extended with what was added afterwards and cut
