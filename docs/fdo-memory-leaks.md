@@ -4,19 +4,24 @@ This is the reference for **why FDO code leaks and what the leak looks like**. I
 agents working in this repository, where the trees under `fdo-dbg`/`fdo-rel`/`MgDev` are edited but
 the build is MSVC rather than a container.
 
-**Provenance.** Everything catalogued here was found and fixed on the Linux side, in the sibling
-[mapguide-fdo-docker-build](https://github.com/jumpinjackie/mapguide-fdo-docker-build) repository,
-where the Debug build is AddressSanitizer/LeakSanitizer-instrumented and every provider suite's log
-doubles as a leak report. The *tooling* references (log paths, the one-shot podman container, the
-`SUMMARY: AddressSanitizer` blocks, byte totals) do not apply here; the *mechanisms* do, because they
-are reference-counting bugs in shared source, and the same bugs surface in a Debug build on Windows
-through the CRT debug heap or a refcount print. [AGENTS.md](../AGENTS.md#finding-a-leak-on-windows)
+**Provenance.** Nearly everything catalogued here was found and fixed on the Linux side, in the
+sibling [mapguide-fdo-docker-build](https://github.com/jumpinjackie/mapguide-fdo-docker-build)
+repository, where the Debug build is AddressSanitizer/LeakSanitizer-instrumented and every provider
+suite's log doubles as a leak report. The *tooling* references (log paths, the one-shot podman
+container, the `SUMMARY: AddressSanitizer` blocks, byte totals) do not apply here; the *mechanisms* do,
+because they are reference-counting bugs in shared source, and the same bugs surface in a Debug build
+on Windows through the CRT debug heap or a refcount print. [AGENTS.md](../AGENTS.md#finding-a-leak-on-windows)
 has the Windows tooling; this document has the patterns and the case studies.
 
-Nothing here has yet been *proved* by a leak run on Windows: the tooling section is guidance built from
-the platform's own facilities (the CRT debug heap, the VS Memory Usage tool, Application Verifier,
-`Release()`'s return value), not a recipe this repository has already used end to end. The first agent
-to run one should correct that section with what actually worked.
+The Windows side has since run the exercise end to end: the CRT debug heap cleared the report of every
+FDO suite here, and the case studies marked *Windows* below were found and fixed that way. Two things
+that exercise taught are worth having before the first run. The report lists every block still
+allocated when the process ends, including blocks that are still owned and reachable — which
+LeakSanitizer never reports, because it treats globals, thread-local storage and live thread stacks as
+roots — so [What the Windows report shows that is not a leak](#what-the-windows-report-shows-that-is-not-a-leak)
+is the section to read second. And a block number from the report can be turned into an allocation
+stack in one run with `_CrtSetBreakAlloc`, which is what makes a Windows-only defect attributable
+without a debugger.
 
 No MapGuide (`Mg*`) leak catalogue has been recorded — the rules below apply to `Ptr<T>`/`Mg*` just as
 much, but every entry here is an `Fdo*` fix.
@@ -299,6 +304,45 @@ new code. Paths are relative to the FDO source root.
 | PostGIS | `FdoRdbmsPostGisFilterProcessor::ProcessSpatialDistanceCondition` kept the counted reference `GetGeometry()` returns in a raw pointer | `geom = dynamic_cast<...>(spatialFilter->GetGeometry())` leaked the test geometry of every spatial and distance condition; the byte array `FdoGeometryValue::GetGeometry()` AddRefs was raw too and leaked with it. |
 | PostGIS | The constraint grammar stranded the semantic values of every symbol the parser discards on a syntax error | `Utilities/Common/Src/Parse/yyConstraint.y`, `yyConstraint.cpp`, `yyConstraintWin.cpp` | Each node-producing nonterminal's value is an owned reference (created with `Create()`, then AddRef'd into the parse context by `AddNode()`/`AddNodeToDelete()`), and the parser never released its own copy when a syntax error discarded a partially built constraint — which is the *normal* path for the check clauses a provider skips. `%destructor` declarations for the 18 node-producing nonterminals, plus the equivalent destructor in both generated parsers, release it: 6 direct records and the 12 objects below them (888 B in 18 allocations) go, with no new record family. See **Generated parsers** below — the generated files could not be reproduced by today's generators and are hand-patched in step with the `.y`. |
 | SQLite | The r8375 spatial-context test dropped the counted references of its `Create()` results and chained getters | `vals->Add(FdoPropertyValue::Create(...))` (40 B each, the only direct records) and `schemas->GetItem(0)->GetClasses()->GetItem(name)`. It also parked `GetGeometryProperty()` — which returns `FDO_SAFE_ADDREF(m_geometry)` — in a raw pointer, and that single lost reference into a deep-copied schema held the whole graph alive: 5,712 B in 75 records, 72 of them indirect, all in one test. Release the `Create()`s and the graph frees itself. |
+| Windows (all suites) | `FdoConnectionManager`'s provider module map was a heap pointer that was deliberately never deleted | r8421 made `GetModuleMap()` hand out a `new FdoModuleMap` that no one frees, so that `~FdoConnectionManager` — which runs from FDO's own teardown, possibly after a namespace-scope static's destructor — could not walk a freed tree; the process-exit hang it fixed is real. The map is still reachable from a static, which is why LeakSanitizer never reported it, but the Windows CRT dumps it in *every* suite that opens a connection: the map object (24 B) and its container proxy (16 B), its head node (80 B) and, once a provider has been loaded, that node's key and value (32 B for `OSGeo.OGR` and so on) — 3 blocks for a suite that never connected and 6 for one that did. The map is now owned by a function-local holder whose destructor unloads the modules and destroys the map, and `~FdoConnectionManager` no longer touches it, so neither the ordering hazard nor the leak remains. |
+| Windows (SHP, MySQL, SQLServerSpatial, OGR) | Test code held `FdoFgfGeometryFactory::GetInstance()`'s reference in a raw `FdoFgfGeometryFactory*` local | `GetInstance()` returns an owned reference to the per-thread factory (`Geometry/Fgf/GeometryFactory.cpp`), so `FdoFgfGeometryFactory *geometry_factory = FdoFgfGeometryFactory::GetInstance();` in `FdoExpressionFunctionTest::AddFeature`/`AddXYZMFeature` (SHP and OGR) and in `FdoFilterTest` (the GenericRdbms test the MySQL and SQLServerSpatial suites share) leaked it once per call. The factory owns `FdoFgfGeometryPools`, and geometries handed back to a pool stay reachable through it, so one lost reference kept a whole FGF pool graph alive — the 80-byte pool nodes, 72-byte pools, 40-byte pool items and 184/508/2764-byte `FdoByteArray` blocks that made up most of those three reports. All three are `FdoPtr<FdoFgfGeometryFactory>` now. |
+| Windows (SDF, SHP) | `ReaderTest::TestExceptionalCase` in both suites never released the exception it caught | 9 (SDF) and 8 (SHP) `catch (FdoCommandException*)` blocks asserted on `GetExceptionMessage()` and fell out of the catch, losing the exception and its message buffer — one 40-byte object and one 300–392-byte message per block. Each catch copies the message, releases the exception, and asserts afterwards, so a failing assertion cannot leak it either. SDF's copy also passed `FdoIdentifier::Create(L"CITY")` straight to `FdoIdentifierCollection::Add()`, which AddRefs and so lost the identifier, its name and its empty property-name string. |
+| Windows (MySQL) | `MySqlReaderTest::TestExceptionalCase` never released the exception it caught | The same shape in the GenericRdbms MySQL test: 11 catch blocks across the data, feature and SQL readers (each with the "wrong property type" `FdoException` fallback) leaked the exception and its message — the 38-byte `Index out of range` and 306–354-byte message blocks, the whole remaining MySQL report once the FGF factory above was fixed. |
+| WMS | `FdoOwsHttpHandler::Proc` never freed the `curl_slist` it built for a POST request | `curl_slist_append` allocates, `CURLOPT_HTTPHEADER` only borrows, and the list was a local inside the option-setting block, so no path freed it. Hoisted next to the handle and released with `curl_slist_free_all()` once `curl_easy_cleanup()` has finished with the transfer. |
+
+## What the Windows report shows that is not a leak
+
+The CRT debug heap dumps every block still allocated when the process ends, including blocks that are
+still owned and reachable. LeakSanitizer does not report those: it roots at globals, thread-local
+storage and live thread stacks, so anything a static or a running thread still points to is out of
+scope there. That difference is why a suite can be clean on the Linux side and still print a report
+here, and why clearing a Windows report has two halves — fixing the lost references, and recognising
+the blocks that are alive on purpose. What this repository has seen, in the order it is worth ruling
+out:
+
+- **Per-thread caches.** `FdoGeometryThreadData` (`Geometry/Fgf/GeometryThreadData.cpp`) holds the
+  thread's `FdoFgfGeometryFactory` and its geometry pools, and `FdoCommonThreadData`
+  (`Common/ArrayHelper.cpp`) holds the byte-array pool. Both are reached through TLS and released by
+  the DLL's detach handling, which runs after the report is written. The cache itself is therefore
+  noise; a *geometry* still in a pool because a lost reference kept it there is not — that is the
+  raw `GetInstance()` row above, and it is worth checking whether a pool-sized block hangs off the
+  factory block before treating either as noise.
+- **The provider module map**, if it is ever made a never-freed pointer again. See its row above.
+- **OpenSSL and libcurl state.** The WMS and WFS suites make HTTPS requests, and OpenSSL keeps its
+  provider, name maps, DRBG and default contexts in process-lifetime global state that
+  `OPENSSL_cleanup` frees only during its own exit handling. That is the whole WMS report: a
+  capabilities-only test that makes no request reports nothing, every block that remains traces to
+  `CRYPTO_strndup` under `namemap_name2num` or to `drbg_ctr_set_ctx_params`, and the counts scale
+  with the number of requests rather than with any test's own allocations. libcurl's threaded
+  resolver state is the same kind of survivor: a request abandoned while its resolver thread is still
+  running leaves that thread's `thread_data` alive, and the thread frees it when its lookup returns —
+  after the process has gone.
+
+A block reachable from a global or from a live thread is not a defect; a block reachable only from
+other leaked blocks is. The dump shows both identically, so attribute a record before acting on it:
+the `{n}` it printed is the block number to give `_CrtSetBreakAlloc` (see
+[AGENTS.md](../AGENTS.md#finding-a-leak-on-windows)), which turns it into an allocation stack in one
+run.
 
 ## Cycles that are recorded, not fixed
 

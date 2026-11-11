@@ -437,7 +437,18 @@ A Debug build is required for all of these; a Release run will not report anythi
    noise: deliberately-live global and singleton state appears in that dump, so compare against a run
    of the *unmodified* tree and only chase the difference. `_CrtMemCheckpoint` / `_CrtMemDifference`
    around a single test pinpoints what that test allocates and keeps, which is the precise version of
-   the same idea.
+   the same idea. Because the dump counts a block that is still *owned* (by a static, by a thread-local
+   cache, by an OpenSSL global) exactly like one whose last reference was lost, read
+   [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#what-the-windows-report-shows-that-is-not-a-leak)
+   before chasing anything.
+
+   To turn a record into an allocation stack without a debugger, give `_CrtSetBreakAlloc()` the `{n}`
+   the record printed: the CRT raises a breakpoint at that allocation, and a vectored exception
+   handler installed with `AddVectoredExceptionHandler` can walk the pending context with `StackWalk64`
+   and print symbols from the Debug PDBs. That is how the Windows-only defects in
+   [docs/fdo-memory-leaks.md](./docs/fdo-memory-leaks.md#leaks-that-were-fixed) were attributed — the
+   block number is only stable for one binary, so re-read the report from the run you intend to break
+   in, and prefer a single fixture to a whole suite.
 
    The host provides `main` for FdoCore, SDF, SHP, SQLite, OGR, WFS, WMS, KingOracle, ArcSDE and the
    GenericRdbms suites (`UnitTestSQLServerSpatial.exe`, `UnitTestPostGIS.exe`, `UnitTestMySQL.exe`,

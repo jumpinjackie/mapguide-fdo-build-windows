@@ -3,3 +3,6 @@ $env:FDO_SQS_PERF=1
 $env:KG_ORA_SERVICE="//fdodb:1521/xe"
 $env:KG_DEFAULT_ORA_CONNECTION="Username=fdounittest;Password=fdounittest;Service=//fdodb:1521/xe;OracleSchema=fdounittest"
 $env:MG_CRT_LEAK_CHECK=1
+$env:BUILD_INSTALLER=1
+$env:BUILD_INSTANTSETUP=1
+$env:MG_RELEASE_LABEL="Test"
